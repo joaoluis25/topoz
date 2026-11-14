@@ -1,0 +1,3383 @@
+<!--<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Organize seus estudos, planeje suas metas, revise conteúdos e acompanhe sua evolução em um só lugar.">
+<meta name="theme-color" content="#0D1117">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="pt_BR">
+<meta property="og:title" content="Central de Estudos — Organize. Pratique. Evolua.">
+<meta property="og:description" content="Planeje sua rotina, organize conteúdos, pratique a lembrança e acompanhe sua evolução em um só lugar.">
+<title>Central de Estudos — Organize. Pratique. Evolua.</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+
+<body>
+
+<div id="app"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* =====================================================================
+   CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
+   (Project Settings → API, no painel do Supabase)
+===================================================================== */
+const SUPABASE_URL = 'https://btyxrzknkygylvnrzsuo.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let CURRENT_USER = null;
+</script>
+<script>
+/* =====================================================================
+   PERSISTÊNCIA
+===================================================================== */
+const STORAGE_KEY = 'central-estudos-data-v1';
+let SAVE_TIMER = null;
+let SAVING = false;
+let SAVE_CHAIN = Promise.resolve();
+let SAVE_VERSION = 0;
+let SAVE_STATUS = 'saved'; // pending | saving | saved | error
+let DATA_READY = false;
+let DATA_LOAD_ERROR = null;
+
+function defaultState(){
+  return {
+    schemaVersion: 2,
+    topics: [], // {id, name, parentId, color, progress}
+    notes: [],  // {id,title,html,topicId,tags[],checklist[],priority,favorite,reviewOn,nextReview,interval,createdAt,updatedAt}
+    goals: [],
+    sessions: [],
+    events: [],
+    doubts: [],
+    questions: [],
+    flashcards: [],
+    settings: {
+      terms:{area:'Área', sub:'Tópico'},
+      pomodoro:{
+        work:25, brk:5,
+        presets:[
+          {id:'p25',name:'Clássico',work:25,brk:5},
+          {id:'p50',name:'Foco profundo',work:50,brk:10}
+        ],
+        cycles:[
+          {id:'c60x4',name:'4 × 60/10',repeats:4,steps:[{work:60,brk:10}]}
+        ]
+      },
+      reviewIntervals:[1,3,7,16,35]
+    }
+  };
+}
+let STATE = defaultState();
+
+// Ciclos personalizados aceitam foco e pausa de até 180 minutos cada.
+// Mantemos essa regra centralizada para a UI, o salvamento e a leitura dos dados.
+function normalizeCycleMinute(value, fallback, min=0){
+  if(value===null || value===undefined || String(value).trim()==='') return fallback;
+  const n=Number(value);
+  if(!Number.isFinite(n)) return fallback;
+  return Math.round(Math.max(min,Math.min(180,n)));
+}
+function normalizeState(raw){
+  const base=defaultState(), data=raw&&typeof raw==='object'?raw:{};
+  const arr=k=>Array.isArray(data[k])?data[k]:[];
+  const cleanId=v=>typeof v==='string'&&/^[A-Za-z0-9_-]{1,80}$/.test(v)?v:uid();
+  const cleanDate=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&isValidDateOnly(v)?v:null;
+  const cleanTimestamp=v=>typeof v==='string'&&parseDateSafe(v)?v:null;
+  const checklist=v=>Array.isArray(v)?v.slice(0,100).map(c=>({done:!!c?.done,text:String(c?.text||'').slice(0,500)})).filter(c=>c.text.trim()):[];
+  const topics=arr('topics').slice(0,1000).map(t=>({id:cleanId(t?.id),name:String(t?.name||'').slice(0,200),parentId:typeof t?.parentId==='string'?t.parentId:null,color:Math.max(1,Math.min(20,Number(t?.color)||1)),progress:Math.max(0,Math.min(100,Number(t?.progress)||0))})).filter(t=>t.name.trim());
+  const topicIds=new Set(topics.map(t=>t.id)); topics.forEach(t=>{if(t.parentId===t.id||!topicIds.has(t.parentId))t.parentId=null;});
+  const notes=arr('notes').slice(0,2000).map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),reviewHistory:Array.isArray(n?.reviewHistory)?n.reviewHistory.slice(-500).map(r=>({date:cleanDate(r?.date)||todayISO(),intervalDays:Math.max(1,Math.min(365,Number(r?.intervalDays)||1)),nextReview:cleanDate(r?.nextReview)})):[],createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
+  const goals=arr('goals').slice(0,1000).map(g=>{
+    const rawStatus=String(g?.status||'andamento').toLowerCase();
+    const status=rawStatus==='concluida'?'concluida':(['pausada','paused'].includes(rawStatus)?'pausada':'andamento');
+    const rawPriority=String(g?.priority||'normal').toLowerCase();
+    const priority=(rawPriority==='alta'||rawPriority==='high')?'alta':((rawPriority==='baixa'||rawPriority==='low')?'baixa':'normal');
+    return {id:cleanId(g?.id),title:String(g?.title||'').slice(0,300),description:String(g?.description||'').slice(0,2000),deadline:cleanDate(g?.deadline),priority,rank:Math.max(0,Math.min(999999,Number(g?.rank)||0)),topicId:topicIds.has(g?.topicId)?g.topicId:null,status,checklist:checklist(g?.checklist),progress:Math.max(0,Math.min(100,Number(g?.progress)||0)),createdAt:cleanTimestamp(g?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(g?.updatedAt)||cleanTimestamp(g?.createdAt)||new Date().toISOString()};
+  });
+  const sessions=arr('sessions').slice(0,5000).map(x=>({id:cleanId(x?.id),topicId:topicIds.has(x?.topicId)?x.topicId:null,date:cleanDate(x?.date)||todayISO(),duration:Math.max(0,Math.min(1440,Number(x?.duration)||0)),observation:String(x?.observation||'').slice(0,2000),createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()}));
+  const events=arr('events').slice(0,2000).map(x=>({id:cleanId(x?.id),title:String(x?.title||'').slice(0,300),date:cleanDate(x?.date)||todayISO(),type:String(x?.type||'evento').slice(0,80),topicId:topicIds.has(x?.topicId)?x.topicId:null}));
+  const doubts=arr('doubts').slice(0,2000).map(x=>({id:cleanId(x?.id),question:String(x?.question||'').slice(0,1000),topicId:topicIds.has(x?.topicId)?x.topicId:null,explanation:String(x?.explanation||'').slice(0,3000),status:x?.status==='resolvida'?'resolvida':'aberta',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()})).filter(x=>x.question.trim());
+  const flashcards=arr('flashcards').slice(0,5000).map(x=>{
+    const history=Array.isArray(x?.reviewHistory)?x.reviewHistory.slice(-200).map(r=>({
+      date:cleanDate(r?.date)||todayISO(),
+      rating:['again','hard','good','easy'].includes(r?.rating)?r.rating:'good',
+      intervalDays:Math.max(1,Math.min(3650,Math.floor(Number(r?.intervalDays)||1))),
+      nextReview:cleanDate(r?.nextReview)
+    })):[];
+    const interval=Number(x?.reviewIntervalDays);
+    const ease=Number(x?.easeFactor);
+    return {
+      id:cleanId(x?.id),front:String(x?.front||'').slice(0,2000),back:String(x?.back||'').slice(0,5000),
+      topicId:topicIds.has(x?.topicId)?x.topicId:null,
+      difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',
+      nextReview:cleanDate(x?.nextReview)||todayISO(),
+      repetitions:Math.max(0,Math.min(10000,Math.floor(Number(x?.repetitions)||0))),
+      totalReviews:Math.max(0,Math.min(1000000,Math.floor(Number(x?.totalReviews)||0))),
+      reviewIntervalDays:Number.isFinite(interval)?Math.max(0,Math.min(3650,Math.floor(interval))):0,
+      easeFactor:Number.isFinite(ease)?Math.max(1.3,Math.min(3.0,ease)):2.5,
+      reviewHistory:history,
+      createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()
+    };
+  }).filter(x=>x.front.trim()&&x.back.trim());
+  const questions=arr('questions').slice(0,5000).map(x=>{
+    const legacyQuestion=String(x?.question||'').slice(0,3000);
+    const legacyAnswer=String(x?.answer||'').slice(0,8000);
+    const qHtml=sanitizeNoteHtml(String(x?.questionHtml||'').trim() || `<p>${esc(legacyQuestion)}</p>`);
+    const aHtml=sanitizeNoteHtml(String(x?.answerHtml||'').trim() || (legacyAnswer.trim()?`<p>${esc(legacyAnswer)}</p>`:''));
+    return {id:cleanId(x?.id),question:legacyQuestion.slice(0,3000),answer:legacyAnswer.slice(0,8000),questionHtml:qHtml,answerHtml:aHtml,topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()};
+  }).filter(x=>stripHtml(x.questionHtml).trim() || /<img\b/i.test(x.questionHtml));
+  const settings=data.settings&&typeof data.settings==='object'?data.settings:{},terms=settings.terms&&typeof settings.terms==='object'?settings.terms:{},pom=settings.pomodoro&&typeof settings.pomodoro==='object'?settings.pomodoro:{};
+  const intervals=Array.isArray(settings.reviewIntervals)?settings.reviewIntervals.map(Number).filter(Number.isFinite).map(x=>Math.max(1,Math.min(365,x))).slice(0,20):base.settings.reviewIntervals;
+  const fallbackPresets=base.settings.pomodoro.presets;
+  const presets=Array.isArray(pom.presets)?pom.presets.slice(0,30).map((p,i)=>({
+    id:typeof p?.id==='string'&&p.id?p.id:uid(),
+    name:String(p?.name||`Timer ${i+1}`).slice(0,50),
+    work:Math.max(1,Math.min(180,Number(p?.work)||25)),
+    brk:Math.max(0,Math.min(180,p?.brk===0?0:(Number.isFinite(Number(p?.brk))?Number(p.brk):5)))
+  })).filter(p=>p.name.trim()):fallbackPresets;
+  const cycles=Array.isArray(pom.cycles)?pom.cycles.slice(0,20).map((c,i)=>{
+    const name=String(c?.name||`Ciclo ${i+1}`).slice(0,60);
+    const repeats=Math.max(1,Math.min(20,Number(c?.repeats)||1));
+    const steps=Array.isArray(c?.steps)?c.steps.slice(0,12).map(st=>({work:normalizeCycleMinute(st?.work,25,1),brk:normalizeCycleMinute(st?.brk,5,0)})).filter(st=>st.work>0):[];
+
+    // Migra ciclos antigos cujo foco/pausa foi truncado em 60 min antes da correção.
+    // Só aplica quando o próprio nome descreve precisamente repetições e tempos (ex.: "5×70/30"),
+    // há uma única etapa, o número de repetições confere e os valores salvos coincidem com os
+    // valores do nome, exceto pelos campos que ficaram presos em 60.
+    const declared=name.match(/^\s*(\d+)\s*[x×]\s*(\d+)\s*\/\s*(\d+)\s*$/i);
+    if(declared && steps.length===1){
+      const [,repText,workText,breakText]=declared;
+      const declaredRepeats=Number(repText), declaredWork=Number(workText), declaredBreak=Number(breakText);
+      const step=steps[0];
+      const workMatches=step.work===declaredWork || (step.work===60 && declaredWork>60 && declaredWork<=180);
+      const breakMatches=step.brk===declaredBreak || (step.brk===60 && declaredBreak>60 && declaredBreak<=180);
+      const hasLegacyCap=(step.work===60 && declaredWork>60 && declaredWork<=180) || (step.brk===60 && declaredBreak>60 && declaredBreak<=180);
+      if(declaredRepeats===repeats && workMatches && breakMatches && hasLegacyCap){
+        step.work=declaredWork;
+        step.brk=declaredBreak;
+      }
+    }
+    return {id:typeof c?.id==='string'&&c.id?c.id:uid(),name,repeats,steps};
+  }).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
+  const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
+  const legacyBrk=Math.max(0,Math.min(180,pom.brk===0?0:(Number.isFinite(Number(pom.brk))?Number(pom.brk):5)));
+  return {...base,schemaVersion:2,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals}};
+}
+async function loadState(){
+  if(!CURRENT_USER)return false;
+  DATA_READY=false;
+  DATA_LOAD_ERROR=null;
+  updateSaveStatusUI();
+  try{
+    const {data:row,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();
+    if(error)throw error;
+    let raw={};
+    if(row){
+      raw=row.data;
+      if(!raw || typeof raw!=='object' || Array.isArray(raw)){
+        throw new Error('O registro de dados possui formato inválido. Os dados não foram alterados.');
+      }
+      const knownCollections=['topics','notes','goals','sessions','events','doubts','questions','flashcards'];
+      const hasKnownData=knownCollections.some(key=>Array.isArray(raw[key]));
+      if(!hasKnownData){
+        throw new Error('Não foi possível reconhecer o formato dos dados salvos. Nenhum dado foi sobrescrito.');
+      }
+    }
+    const normalized=normalizeState(raw);
+    const rawCycles=raw?.settings?.pomodoro?.cycles;
+    const repairedLegacyCycle=Array.isArray(rawCycles)&&normalized.settings.pomodoro.cycles.some(cycle=>{
+      const previous=rawCycles.find(item=>item&&item.id===cycle.id);
+      return !!previous&&Array.isArray(previous.steps)&&cycle.steps.some((step,index)=>
+        Number(previous.steps[index]?.work)!==step.work || Number(previous.steps[index]?.brk)!==step.brk
+      );
+    });
+    STATE=normalized;
+    DATA_READY=true;
+    DATA_LOAD_ERROR=null;
+    updateSaveStatusUI();
+    // Persiste apenas migrações determinísticas reconhecidas no estado salvo.
+    if(repairedLegacyCycle)saveState();
+    return true;
+  }catch(e){
+    console.error('Erro ao carregar dados do Supabase',e);
+    DATA_READY=false;
+    DATA_LOAD_ERROR=e;
+    SAVE_STATUS='error';
+    updateSaveStatusUI();
+    return false;
+  }
+}
+async function persistStateSnapshot(version){
+  const userId=CURRENT_USER?.id;
+  if(!userId||!DATA_READY||version!==SAVE_VERSION)return false;
+  const snapshot=JSON.parse(JSON.stringify(STATE));
+  const task=async()=>{
+    if(!CURRENT_USER||CURRENT_USER.id!==userId||!DATA_READY||version!==SAVE_VERSION)return false;
+    SAVING=true;
+    SAVE_STATUS='saving';
+    updateSaveStatusUI();
+    try{
+      const {error}=await sb.from('study_data').upsert({
+        user_id:userId,
+        data:snapshot,
+        updated_at:new Date().toISOString()
+      },{onConflict:'user_id'});
+      if(error)throw error;
+      if(version===SAVE_VERSION)SAVE_STATUS='saved';
+      return true;
+    }catch(e){
+      console.error('Erro ao salvar no Supabase',e);
+      if(version===SAVE_VERSION){
+        SAVE_STATUS='error';
+        toast('Não foi possível sincronizar. Seus dados continuam nesta tela; tente salvar novamente.');
+      }
+      return false;
+    }finally{
+      SAVING=false;
+      updateSaveStatusUI();
+    }
+  };
+  const queued=SAVE_CHAIN.catch(()=>false).then(task);
+  SAVE_CHAIN=queued.catch(()=>false);
+  return queued;
+}
+function saveState(){
+  if(!CURRENT_USER||!DATA_READY){
+    if(CURRENT_USER&&!DATA_READY)console.warn('Salvamento bloqueado: os dados da conta ainda não foram carregados.');
+    return;
+  }
+  const version=++SAVE_VERSION;
+  SAVE_STATUS='pending';
+  clearTimeout(SAVE_TIMER);
+  SAVE_TIMER=setTimeout(()=>persistStateSnapshot(version),500);
+  updateSaveStatusUI();
+}
+async function saveStateNow(){
+  if(!CURRENT_USER||!DATA_READY)return false;
+  clearTimeout(SAVE_TIMER);
+  const version=++SAVE_VERSION;
+  SAVE_STATUS='pending';
+  updateSaveStatusUI();
+  return persistStateSnapshot(version);
+}
+async function retrySaveState(){
+  if(SAVE_STATUS!=='error')return;
+  const ok=await saveStateNow();
+  if(ok)toast('Dados sincronizados com sucesso.');
+}
+function saveStatusMarkup(){
+  const labels={pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
+  const icons={pending:'●',saving:'↻',saved:'✓',error:'!'};
+  return `<button type="button" id="saveStatusIndicator" class="sync-status is-${SAVE_STATUS}" onclick="retrySaveState()" ${SAVE_STATUS==='error'?'':'disabled'} aria-live="polite" title="${SAVE_STATUS==='error'?'Clique para tentar salvar novamente':'Status da sincronização'}"><span class="sync-status-icon" aria-hidden="true">${icons[SAVE_STATUS]||'✓'}</span><span>${labels[SAVE_STATUS]||labels.saved}</span></button>`;
+}
+function updateSaveStatusUI(){
+  const el=document.getElementById('saveStatusIndicator');
+  if(!el)return;
+  const labels={pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
+  const icons={pending:'●',saving:'↻',saved:'✓',error:'!'};
+  el.className=`sync-status is-${SAVE_STATUS}`;
+  el.innerHTML=`<span class="sync-status-icon" aria-hidden="true">${icons[SAVE_STATUS]||'✓'}</span><span>${labels[SAVE_STATUS]||labels.saved}</span>`;
+  el.title=SAVE_STATUS==='error'?'Clique para tentar salvar novamente':'Status da sincronização';
+  el.disabled=SAVE_STATUS!=='error';
+}
+function renderDataLoading(){
+  document.body.classList.remove('public-landing-body');
+  const app=document.getElementById('app');
+  app.innerHTML=`<main class="data-state-wrap"><section class="data-state-card"><div class="data-state-icon">☁</div><p class="data-state-eyebrow">CENTRAL DE ESTUDOS</p><h1>Carregando seus dados</h1><p>Estamos preparando seu espaço de estudos com segurança.</p><div class="data-state-spinner" aria-hidden="true"></div></section></main>`;
+}
+function renderDataLoadError(){
+  document.body.classList.remove('public-landing-body');
+  const app=document.getElementById('app');
+  const detail=DATA_LOAD_ERROR?.message||'Não foi possível acessar seus dados no momento.';
+  app.innerHTML=`<main class="data-state-wrap"><section class="data-state-card" role="alert"><div class="data-state-icon error">!</div><p class="data-state-eyebrow">SINCRONIZAÇÃO INDISPONÍVEL</p><h1>Seus dados ainda não foram carregados</h1><p>Por segurança, a Central de Estudos bloqueou a edição para evitar sobrescrever informações salvas.</p><p class="data-state-detail">${esc(detail)}</p><button class="btn btn-primary" type="button" onclick="retryLoadState()">Tentar novamente</button><button class="btn btn-ghost" type="button" onclick="logout()">Sair da conta</button></section></main>`;
+}
+async function retryLoadState(){
+  renderDataLoading();
+  const ok=await loadState();
+  if(ok){restoreTimerRuntime();render();} else renderDataLoadError();
+}
+
+/* =====================================================================
+   HELPERS
+===================================================================== */
+const uid=()=>window.crypto?.randomUUID?window.crypto.randomUUID():Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-8);
+function localDateISO(date=new Date()){
+  const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0');
+  return `${y}-${m}-${d}`;
+}
+const todayISO=()=>localDateISO(new Date());
+function parseDateSafe(value){if(value instanceof Date)return isNaN(value.getTime())?null:value;if(value===null||value===undefined)return null;const text=String(value).trim();if(!text)return null;const d=/^\d{4}-\d{2}-\d{2}$/.test(text)?new Date(text+'T00:00:00'):new Date(text);return isNaN(d.getTime())?null:d;}
+function isValidDateOnly(value){return /^\d{4}-\d{2}-\d{2}$/.test(String(value||''))&&!!parseDateSafe(value);}
+function dateKey(value){
+  if(typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value))return isValidDateOnly(value)?value:null;
+  const d=parseDateSafe(value);
+  return d?localDateISO(d):null;
+}
+function daysBetween(a,b){const da=parseDateSafe(a),db=parseDateSafe(b);return da&&db?Math.round((da-db)/86400000):null;}
+function fmtDate(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'}):'Data inválida';}
+function fmtDateShort(iso){const d=parseDateSafe(iso);return d?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}):'Data inválida';}
+function sanitizeNoteHtml(html){
+  const source=String(html||'');
+  if(window.DOMPurify){
+    return window.DOMPurify.sanitize(source,{
+      ALLOWED_TAGS:['b','strong','i','em','u','s','br','p','div','span','ul','ol','li','blockquote','pre','code','hr','a','img','h1','h2','h3','h4','sub','sup'],
+      ALLOWED_ATTR:['href','target','rel','title','src','alt','width','height'],
+      ALLOW_DATA_ATTR:false,
+      FORBID_TAGS:['script','style','iframe','object','embed','form','base','meta','link','svg','math','template']
+    });
+  }
+  const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){
+const raw=String(a.value||'').trim();
+if(n==='src' && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(raw) && raw.length<=1400000){el.setAttribute(a.name,raw);return;}
+try{const u=new URL(raw,document.baseURI);if(!['http:','https:','mailto:'].includes(u.protocol))el.removeAttribute(a.name);else el.setAttribute(a.name,u.href);}catch{el.removeAttribute(a.name);}
+}});if(el.tagName==='A'){el.setAttribute('target','_blank');el.setAttribute('rel','noopener noreferrer nofollow');}});return t.innerHTML;}
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function stripHtml(html){ const d=document.createElement('div'); d.innerHTML=html||''; return d.textContent||''; }
+function toast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._timer); t._timer=setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function topicPath(id){
+  const chain=[]; let cur=STATE.topics.find(t=>t.id===id);
+  while(cur){ chain.unshift(cur.name); cur=STATE.topics.find(t=>t.id===cur.parentId); }
+  return chain.join(' → ');
+}
+function topicColorClass(id){
+  const t = STATE.topics.find(x=>x.id===id);
+  if(!t) return '';
+  return 'color-'+(t.color||1);
+}
+function allDescendantIds(id){
+  let out=[id];
+  STATE.topics.filter(t=>t.parentId===id).forEach(c=>{ out = out.concat(allDescendantIds(c.id)); });
+  return out;
+}
+// Aggregate "activity" per day from notes(created/updated), sessions, goals-updates
+function activityByDay(){
+  const map = {};
+  const bump=(iso,weight)=>{const k=dateKey(iso);if(!k)return;map[k]=(map[k]||0)+weight;};
+  STATE.notes.forEach(n=>{ bump(n.createdAt,2); if(n.updatedAt && dateKey(n.updatedAt)!==dateKey(n.createdAt)) bump(n.updatedAt,1); });
+  STATE.sessions.forEach(s=> bump(s.date, 2));
+  STATE.doubts.forEach(d=> bump(d.createdAt,1));
+  STATE.notes.forEach(n=>(n.reviewHistory||[]).forEach(r=>bump(r.date,1)));
+  STATE.flashcards.forEach(f=>{bump(f.createdAt,1);(f.reviewHistory||[]).forEach(r=>bump(r.date,1));});
+  return map;
+}
+function computeStreak(){
+  const map = activityByDay();
+  let streak=0; let cur=new Date();
+  while(true){
+    const k = dateKey(cur);
+    if(map[k]) { streak++; cur.setDate(cur.getDate()-1); }
+    else if(k===todayISO()){ cur.setDate(cur.getDate()-1); } // today with no activity yet still allow yesterday chain
+    else break;
+  }
+  let best=0, run=0;
+  const days = Object.keys(map).sort();
+  let prev=null;
+  days.forEach(d=>{
+    if(prev){
+      const diff = daysBetween(d,prev);
+      run = diff===1 ? run+1 : 1;
+    } else run=1;
+    best = Math.max(best, run);
+    prev = d;
+  });
+  return {current:streak, best};
+}
+function totalStudyMinutes(){ return STATE.sessions.reduce((a,s)=>a+(s.duration||0),0); }
+function minutesToHM(m){ const h=Math.floor(m/60), mm=Math.round(m%60); return h>0? h+'h '+mm+'min' : mm+'min'; }
+
+/* =====================================================================
+   ROUTER / STATE UI
+===================================================================== */
+let ROUTE = 'dashboard';
+let SELECTED_DAY = todayISO();
+let SIDEBAR_OPEN = false;
+/*ATUALIZAÇÃO NA AREA DE QUESTÕES, CODIGO NOVO ADICIONADO ABAIXO*/
+let QUESTION_FILTER = {
+  topicId: null,
+  difficulty: null
+};
+/*--------------------------------------------------------------*/
+let TIMER = {
+  running:false, hasStarted:false, mode:'work', remaining:25*60, intervalId:null, topicId:null,
+  planType:'preset', presetId:'p25', cycleId:null, cycleSteps:[], cycleRepeats:1,
+  cycleStepIndex:0, cycleRound:1, currentWorkMinutes:25, currentBreakMinutes:5, endAt:null
+};
+let CYCLE_EDITING_ID = null;
+
+const ROUTES = [
+  {id:'dashboard', label:'Dashboard', ic:'🏠'},
+  {id:'calendario', label:'Calendário', ic:'📅'},
+  {id:'meudia', label:'Meu Dia', ic:'🕐'},
+  {id:'anotacoes', label:'Anotações', ic:'📝'},
+  {id:'conteudos', label:'Conteúdos', ic:'📚'},
+  {id:'metas', label:'Metas', ic:'🎯'},
+  {id:'revisoes', label:'Revisões', ic:'📖'},
+  {id:'sessoes', label:'Sessões', ic:'⏱️'},
+  {id:'duvidas', label:'Dúvidas', ic:'❓'},
+  {id:'flashcards', label:'Flashcards', ic:'🧠'},
+  {id:'questoes', label:'Questões', ic:'📋'},
+  {id:'eventos', label:'Provas & Eventos', ic:'🔔'},
+  {id:'estatisticas', label:'Estatísticas', ic:'📊'},
+  {id:'favoritos', label:'Favoritos', ic:'⭐'},
+  {id:'historico', label:'Histórico', ic:'🗂️'},
+  {id:'config', label:'Configurações', ic:'⚙️'},
+];
+const ROUTE_TITLES = Object.fromEntries(ROUTES.map(r=>[r.id, r.label]));
+
+function navigate(route){ ROUTE = route; SIDEBAR_OPEN=false; render(); }
+
+/* =====================================================================
+   RENDER SHELL
+===================================================================== */
+function render(){
+  document.body.classList.remove('public-landing-body');
+  const app = document.getElementById('app');
+  if(CURRENT_USER&&!DATA_READY){renderDataLoadError();return;}
+  const streak = computeStreak();
+  app.innerHTML = `
+    ${SIDEBAR_OPEN?'<div class="backdrop-close" onclick="SIDEBAR_OPEN=false;render()"></div>':''}
+    <div class="sidebar ${SIDEBAR_OPEN?'open':''}">
+      <div class="brand"><div class="dot"></div><span>Central de Estudos</span></div>
+      <div class="nav">
+        ${ROUTES.map(r=>`<button class="nav-item ${ROUTE===r.id?'active':''}" onclick="navigate('${r.id}')"><span class="ic">${r.ic}</span>${r.label}</button>`).join('')}
+      </div>
+      <div class="sidebar-foot">
+        <div class="sidebar-timer" onclick="navigate('sessoes')" title="Abrir sessões e controlar o timer">
+          <div class="sidebar-timer-top">
+            <span>⏱️ Timer</span>
+            <span id="globalTimerStatus">${TIMER.running?'Em andamento':(TIMER.hasStarted?'Pausado':'Pronto')}</span>
+          </div>
+          <div class="sidebar-timer-main">
+            <div class="sidebar-timer-time" id="globalTimerDisplay">${fmtTimer(TIMER.remaining)}</div>
+            <button class="sidebar-timer-toggle" id="globalTimerToggle" type="button" onclick="toggleSidebarTimer(event)" aria-label="${TIMER.running?'Pausar timer':'Continuar timer'}" title="${TIMER.running?'Pausar timer':'Continuar timer'}">${TIMER.running?'⏸':'▶'}</button>
+          </div>
+          <div class="sidebar-timer-mode">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.planType==='cycle'?' · Ciclo':''}</div>
+        </div>
+        <div class="streak-pill">
+          <span style="font-size:16px">🔥</span>
+          <div><div class="n">${streak.current}</div><div class="l">dias seguidos</div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:6px 8px;">
+          <span style="font-size:11px;color:var(--text-faint);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${CURRENT_USER?esc(CURRENT_USER.email):''}">${CURRENT_USER?esc(CURRENT_USER.email):''}</span>
+          <button class="icon-btn" title="Sair" onclick="logout()">⏻</button>
+        </div>
+      </div>
+    </div>
+    <button class="mobile-toggle" onclick="SIDEBAR_OPEN=!SIDEBAR_OPEN;render()">${SIDEBAR_OPEN?'✕':'☰'}</button>
+    <div class="main">
+      <div class="topbar">
+        <div style="display:flex;align-items:center;">
+          <button class="mobile-menu-btn" onclick="SIDEBAR_OPEN=true;render()">☰</button>
+          <div>
+            <h1>${ROUTE_TITLES[ROUTE]}</h1>
+            <div class="sub">${topbarSubtitle()}</div>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          ${saveStatusMarkup()}
+          <button class="search-btn" onclick="openSearch()" aria-label="Buscar em tudo"><span class="search-btn-icon" aria-hidden="true">🔍</span><span class="search-btn-text">Buscar em tudo...</span><kbd>/</kbd></button>
+        </div>
+      </div>
+      <div class="content" id="content"></div>
+    </div>
+  `;
+  const content = document.getElementById('content');
+  content.innerHTML = renderRoute();
+  afterRender();
+}
+function topbarSubtitle(){
+  const d = new Date();
+  const opts = {weekday:'long', day:'numeric', month:'long'};
+  return d.toLocaleDateString('pt-BR', opts);
+}
+function renderRoute(){
+  switch(ROUTE){
+    case 'dashboard': return viewDashboard();
+    case 'calendario': return viewCalendario();
+    case 'meudia': return viewMeuDia();
+    case 'anotacoes': return viewAnotacoes();
+    case 'conteudos': return viewConteudos();
+    case 'metas': return viewMetas();
+    case 'revisoes': return viewRevisoes();
+    case 'sessoes': return viewSessoes();
+    case 'duvidas': return viewDuvidas();
+    case 'flashcards': return viewFlashcards();
+    case 'questoes': return viewQuestoes();
+    case 'eventos': return viewEventos();
+    case 'estatisticas': return viewEstatisticas();
+    case 'favoritos': return viewFavoritos();
+    case 'historico': return viewHistorico();
+    case 'config': return viewConfig();
+    default: return '';
+  }
+}
+function afterRender(){
+  // hooks per-route after DOM injected
+  if(ROUTE==='sessoes') refreshTimerDisplay();
+}
+
+/* =====================================================================
+   DASHBOARD
+===================================================================== */
+function viewDashboard(){
+  const streak = computeStreak();
+  const dueReviews = getDueReviews();
+  const upcoming = STATE.events.filter(e=>e.date>=todayISO()).sort((a,b)=>a.date.localeCompare(b.date)).slice(0,3);
+  const recent = recentActivity(6);
+  const totalMin = totalStudyMinutes();
+
+  if(STATE.topics.length===0 && STATE.notes.length===0){
+    return `
+    <div class="empty-state" style="padding:80px 20px;">
+      <div class="ic">📚</div>
+      <div class="t serif" style="font-size:19px;margin-bottom:8px;">Sua central de estudos está vazia</div>
+      <div class="d">Comece criando uma área de conhecimento (ex: Matemática, Programação, Idiomas) ou já escreva sua primeira anotação. A estrutura é toda sua.</div>
+      <div style="display:flex;gap:10px;justify-content:center;margin-top:18px;">
+        <button class="btn btn-primary" onclick="navigate('conteudos'); setTimeout(openTopicModal,50)">+ Criar área</button>
+        <button class="btn" onclick="openNoteModal()">+ Nova anotação</button>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="grid" style="grid-template-columns: 1.3fr 1fr; gap:14px; margin-bottom:6px;">
+      <div class="hero-stat">
+        <div class="n">${streak.current}</div>
+        <div class="l">dias seguidos estudando · recorde de ${streak.best}</div>
+      </div>
+      <div class="hero-stat" style="background:linear-gradient(160deg, var(--surface-2), var(--surface));">
+        <div class="n" style="color:var(--teal)">${minutesToHM(totalMin)}</div>
+        <div class="l">tempo total de estudo registrado</div>
+      </div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card"><div class="top"><span class="lbl">Conteúdos</span><span class="ic">📚</span></div><div class="num">${STATE.notes.length}</div><div class="lbl">anotações no total</div></div>
+      <div class="stat-card"><div class="top"><span class="lbl">Metas</span><span class="ic">🎯</span></div><div class="num">${STATE.goals.filter(g=>g.status!=='concluida').length}</div><div class="lbl">${STATE.goals.filter(g=>g.status==='concluida').length} concluídas</div></div>
+      <div class="stat-card"><div class="top"><span class="lbl">Revisões</span><span class="ic">📖</span></div><div class="num" style="color:${dueReviews.length?'var(--red)':'var(--text)'}">${dueReviews.length}</div><div class="lbl">pendentes hoje</div></div>
+      <div class="stat-card"><div class="top"><span class="lbl">Áreas</span><span class="ic">🗂️</span></div><div class="num">${STATE.topics.filter(t=>!t.parentId).length}</div><div class="lbl">${STATE.topics.length} tópicos no total</div></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1.4fr 1fr;align-items:start;">
+      <div>
+        <div class="section-title">Atividade recente <span class="see-all" onclick="navigate('historico')">ver histórico →</span></div>
+        <div class="card" style="padding:6px 16px;">
+          ${recent.length? recent.map(renderActivityRow).join('') : emptyRow('Nada por aqui ainda.')}
+        </div>
+
+        <div class="section-title" style="margin-top:22px;">Últimos 21 dias</div>
+        <div class="card">${miniHeatmap(21)}</div>
+      </div>
+
+      <div>
+        <div class="section-title">Revisões de hoje <span class="see-all" onclick="navigate('revisoes')">ver todas →</span></div>
+        <div class="card" style="padding:6px 16px; margin-bottom:20px;">
+          ${dueReviews.length? dueReviews.slice(0,4).map(n=>`
+            <div class="list-row">
+              <span style="flex:1;font-size:13px;">${esc(n.title||'Sem título')}</span>
+              <button class="btn btn-sm" onclick="markReviewed('${n.id}')">Revisado</button>
+            </div>`).join('') : emptyRow('Nenhuma revisão pendente 🎉')}
+        </div>
+
+        <div class="section-title">Próximos eventos <span class="see-all" onclick="navigate('eventos')">ver todos →</span></div>
+        <div class="card" style="padding:6px 16px;">
+          ${upcoming.length? upcoming.map(e=>{
+            const days = daysBetween(e.date,todayISO());
+            return `<div class="list-row"><span style="flex:1;font-size:13px;">${esc(e.title)}</span><span class="pill pill-amber">${days===0?'hoje':'faltam '+days+'d'}</span></div>`;
+          }).join('') : emptyRow('Nenhum evento cadastrado.')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function emptyRow(msg){ return `<div class="list-row" style="color:var(--text-faint);font-size:12.5px;">${msg}</div>`; }
+function renderActivityRow(a){
+  return `<div class="list-row"><span class="ic" style="font-size:14px;">${a.icon}</span><span style="flex:1;font-size:13px;">${esc(a.text)}</span><span style="font-size:11px;color:var(--text-faint);">${fmtDateShort(a.date)}</span></div>`;
+}
+function recentActivity(n){
+  const items = [];
+  STATE.notes.forEach(x=>items.push({date:x.updatedAt||x.createdAt, icon:'📝', text:'Anotação: '+(x.title||'Sem título'), type:'note', id:x.id}));
+  STATE.sessions.forEach(x=>items.push({date:x.date, icon:'⏱️', text:'Sessão de estudo · '+minutesToHM(x.duration||0), type:'session', id:x.id}));
+  STATE.goals.forEach(x=>items.push({date:x.updatedAt||x.createdAt, icon:'🎯', text:'Meta: '+x.title, type:'goal', id:x.id}));
+  STATE.doubts.forEach(x=>items.push({date:x.createdAt, icon:'❓', text:'Dúvida: '+x.question, type:'doubt', id:x.id}));
+  STATE.flashcards.forEach(x=>items.push({date:x.createdAt, icon:'🧠', text:'Flashcard criado', type:'flash', id:x.id}));
+  items.sort((a,b)=>{const da=parseDateSafe(a.date),db=parseDateSafe(b.date);return (db?.getTime()||0)-(da?.getTime()||0);});
+  return items.slice(0,n);
+}
+function miniHeatmap(days){
+  const map = activityByDay();
+  let cells='';
+  for(let i=days-1;i>=0;i--){
+    const d = new Date(); d.setDate(d.getDate()-i);
+    const k = dateKey(d);
+    const v = map[k]||0;
+    let cls='';
+    if(v>=6) cls='act-4'; else if(v>=4) cls='act-3'; else if(v>=2) cls='act-2'; else if(v>=1) cls='act-1';
+    cells += `<div class="cal-day ${cls}" style="aspect-ratio:auto;height:26px;" title="${k}: ${v} pts"></div>`;
+  }
+  return `<div style="display:grid;grid-template-columns:repeat(${days},1fr);gap:4px;">${cells}</div>`;
+}
+
+/* =====================================================================
+   CALENDÁRIO
+===================================================================== */
+let CAL_MONTH = new Date();
+function viewCalendario(){
+  const map = activityByDay();
+  const y = CAL_MONTH.getFullYear(), m = CAL_MONTH.getMonth();
+  const first = new Date(y,m,1);
+  const startDow = first.getDay();
+  const daysInMonth = new Date(y,m+1,0).getDate();
+  const monthLabel = CAL_MONTH.toLocaleDateString('pt-BR',{month:'long', year:'numeric'});
+  let cells = '';
+  for(let i=0;i<startDow;i++) cells += `<div class="cal-day empty"></div>`;
+  for(let d=1; d<=daysInMonth; d++){
+    const iso = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const v = map[iso]||0;
+    let cls=''; if(v>=6) cls='act-4'; else if(v>=4) cls='act-3'; else if(v>=2) cls='act-2'; else if(v>=1) cls='act-1';
+    if(iso===todayISO()) cls+=' today';
+    cells += `<div class="cal-day ${cls}" onclick="SELECTED_DAY='${iso}'; navigate('meudia')"><span class="n">${d}</span>${v?'<span class=\"dot\"></span>':''}</div>`;
+  }
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="icon-btn" onclick="CAL_MONTH.setMonth(CAL_MONTH.getMonth()-1); render()">‹</button>
+        <div class="serif" style="font-size:17px;text-transform:capitalize;min-width:170px;text-align:center;">${monthLabel}</div>
+        <button class="icon-btn" onclick="CAL_MONTH.setMonth(CAL_MONTH.getMonth()+1); render()">›</button>
+      </div>
+      <button class="btn btn-sm" onclick="CAL_MONTH=new Date(); render()">Hoje</button>
+    </div>
+    <div class="card">
+      <div class="cal-grid" style="margin-bottom:6px;">
+        ${['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'].map(d=>`<div class="cal-dow">${d}</div>`).join('')}
+      </div>
+      <div class="cal-grid">${cells}</div>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center;margin-top:14px;font-size:11.5px;color:var(--text-faint);">
+      <span>Menos</span>
+      <div style="display:flex;gap:4px;">
+        <div class="cal-day" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-1" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-2" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-3" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+        <div class="cal-day act-4" style="width:14px;height:14px;aspect-ratio:auto;"></div>
+      </div>
+      <span>Mais</span>
+    </div>
+  `;
+}
+
+/* =====================================================================
+   MEU DIA
+===================================================================== */
+function viewMeuDia(){
+  const iso = SELECTED_DAY;
+  const notes = STATE.notes.filter(n=> (n.createdAt||'').slice(0,10)===iso);
+  const sessions = STATE.sessions.filter(s=>s.date===iso);
+  const doubts = STATE.doubts.filter(d=>(d.createdAt||'').slice(0,10)===iso);
+  const goalsUpdated = STATE.goals.filter(g=>(g.updatedAt||'').slice(0,10)===iso);
+  const totalMin = sessions.reduce((a,s)=>a+(s.duration||0),0);
+  const isToday = iso===todayISO();
+
+  return `
+    <div class="day-strip">
+      <button class="icon-btn" onclick="shiftDay(-1)">‹</button>
+      <div>
+        <div class="date-label">${isToday?'Hoje, ':''}${fmtDate(iso)}</div>
+      </div>
+      <button class="icon-btn" onclick="shiftDay(1)">›</button>
+      <input type="date" value="${iso}" onchange="SELECTED_DAY=this.value; render()" style="margin-left:8px;">
+      ${!isToday?`<button class="btn btn-sm" onclick="SELECTED_DAY=todayISO(); render()">Ir para hoje</button>`:''}
+    </div>
+
+    <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat-card"><div class="num">${notes.length}</div><div class="lbl">anotações</div></div>
+      <div class="stat-card"><div class="num">${sessions.length}</div><div class="lbl">sessões de estudo</div></div>
+      <div class="stat-card"><div class="num">${minutesToHM(totalMin)}</div><div class="lbl">tempo estudado</div></div>
+      <div class="stat-card"><div class="num">${doubts.length}</div><div class="lbl">dúvidas registradas</div></div>
+    </div>
+
+    <div class="section-title">Anotações do dia</div>
+    <div class="notes-grid" style="margin-bottom:22px;">
+      ${notes.length? notes.map(renderNoteCard).join('') : `<div class="card"><div class="empty-state" style="padding:20px;">Nenhuma anotação criada neste dia.</div></div>`}
+    </div>
+
+    <div class="grid" style="grid-template-columns:1fr 1fr;">
+      <div>
+        <div class="section-title">Sessões de estudo</div>
+        <div class="card" style="padding:6px 16px;">
+          ${sessions.length? sessions.map(s=>`
+            <div class="list-row">
+              <span style="flex:1;font-size:13px;">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
+              <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
+            </div>`).join('') : emptyRow('Nenhuma sessão registrada.')}
+        </div>
+      </div>
+      <div>
+        <div class="section-title">Dúvidas registradas</div>
+        <div class="card" style="padding:6px 16px;">
+          ${doubts.length? doubts.map(d=>`
+            <div class="list-row">
+              <span style="flex:1;font-size:13px;">${esc(d.question)}</span>
+              <span class="pill ${d.status==='resolvida'?'pill-teal':'pill-red'}">${d.status==='resolvida'?'resolvida':'aberta'}</span>
+            </div>`).join('') : emptyRow('Nenhuma dúvida neste dia.')}
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:18px;">
+      <button class="btn btn-primary" onclick="openNoteModal(null,'${iso}')">+ Nova anotação neste dia</button>
+      <button class="btn" onclick="openSessionModal(null,'${iso}')">+ Registrar sessão</button>
+    </div>
+  `;
+}
+function shiftDay(delta){
+  const d = new Date(SELECTED_DAY+'T00:00:00'); d.setDate(d.getDate()+delta);
+  SELECTED_DAY = dateKey(d); render();
+}
+
+/* =====================================================================
+   TÓPICOS / CONTEÚDOS
+===================================================================== */
+function viewConteudos(){
+  const roots = STATE.topics.filter(t=>!t.parentId);
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div class="sub" style="color:var(--text-faint);font-size:12.5px;">Organize seu conhecimento do jeito que fizer sentido para você — sem hierarquia fixa.</div>
+      <button class="btn btn-primary" onclick="openTopicModal()">+ Nova área/tópico</button>
+    </div>
+    ${roots.length===0? `<div class="card"><div class="empty-state"><div class="ic">🗂️</div><div class="t">Nenhuma área criada ainda</div><div class="d">Crie sua primeira área de conhecimento — pode ser uma matéria, um idioma, um projeto, o que você quiser.</div></div></div>` : `
+    <div class="card">
+      <div class="topic-tree">
+        ${roots.map(t=>renderTopicNode(t,0)).join('')}
+      </div>
+    </div>`}
+  `;
+}
+function renderTopicNode(t, depth){
+  const children = STATE.topics.filter(x=>x.parentId===t.id);
+  const noteCount = STATE.notes.filter(n=>n.topicId===t.id).length;
+  const indent = depth*20;
+  let html = `
+    <div class="topic-node color-${t.color||1}" style="margin-left:${indent}px;">
+      <span style="cursor:pointer;flex:1;display:flex;align-items:center;gap:8px;" onclick="navigate('anotacoes'); setTimeout(()=>filterByTopic('${t.id}'),30)">
+        <span class="name">${esc(t.name)}</span>
+        <span class="count">${noteCount} anotações${children.length?' · '+children.length+' subtópicos':''}</span>
+      </span>
+      <div style="width:70px;">
+        <div class="progress-bar"><div style="width:${t.progress||0}%"></div></div>
+      </div>
+      <div class="actions">
+        <button class="icon-btn" title="Adicionar subtópico" onclick="event.stopPropagation();openTopicModal(null,'${t.id}')">+</button>
+        <button class="icon-btn" title="Editar" onclick="event.stopPropagation();openTopicModal('${t.id}')">✎</button>
+        <button class="icon-btn btn-trash" title="Excluir" onclick="event.stopPropagation();deleteTopic('${t.id}')">🗑</button>
+      </div>
+    </div>`;
+  children.forEach(c=> html += renderTopicNode(c, depth+1));
+  return html;
+}
+function openTopicModal(id=null, parentId=null){
+  const editing = id ? STATE.topics.find(t=>t.id===id) : null;
+  const parentOptions = STATE.topics.filter(t=>t.id!==id).map(t=>`<option value="${t.id}" ${((editing&&editing.parentId===t.id)||parentId===t.id)?'selected':''}>${esc(topicPath(t.id))}</option>`).join('');
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar':'Novo'} tópico</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Nome</label><input id="mTopicName" value="${editing?esc(editing.name):''}" placeholder="Ex: Matemática, JavaScript, Inglês..." autofocus></div>
+    <div class="field"><label>Pertence a (opcional)</label><select id="mTopicParent"><option value="">— Nenhum (área raiz) —</option>${parentOptions}</select></div>
+
+    <div class="field"> 
+    <label>Cor de identificação</label>
+
+    <div class="topic-color-picker">
+
+        <button
+            type="button"
+            class="topic-color-option color-amber ${!editing || editing.color === 'amber' ? 'selected' : ''}"
+            data-color="amber"
+            onclick="selectTopicColor('amber')"
+            title="Âmbar">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-teal ${editing?.color === 'teal' ? 'selected' : ''}"
+            data-color="teal"
+            onclick="selectTopicColor('teal')"
+            title="Verde">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-violet ${editing?.color === 'violet' ? 'selected' : ''}"
+            data-color="violet"
+            onclick="selectTopicColor('violet')"
+            title="Roxo">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-red ${editing?.color === 'red' ? 'selected' : ''}"
+            data-color="red"
+            onclick="selectTopicColor('red')"
+            title="Vermelho">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-blue ${editing?.color === 'blue' ? 'selected' : ''}"
+            data-color="blue"
+            onclick="selectTopicColor('blue')"
+            title="Azul">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-pink ${editing?.color === 'pink' ? 'selected' : ''}"
+            data-color="pink"
+            onclick="selectTopicColor('pink')"
+            title="Rosa">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-cyan ${editing?.color === 'cyan' ? 'selected' : ''}"
+            data-color="cyan"
+            onclick="selectTopicColor('cyan')"
+            title="Ciano">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-green ${editing?.color === 'green' ? 'selected' : ''}"
+            data-color="green"
+            onclick="selectTopicColor('green')"
+            title="Verde">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-orange ${editing?.color === 'orange' ? 'selected' : ''}"
+            data-color="orange"
+            onclick="selectTopicColor('orange')"
+            title="Laranja">
+            <span></span>
+        </button>
+
+        <button
+            type="button"
+            class="topic-color-option color-white ${editing?.color === 'white' ? 'selected' : ''}"
+            data-color="white"
+            onclick="selectTopicColor('white')"
+            title="Branco">
+            <span></span>
+        </button>
+
+        <input
+            type="color"
+            id="mTopicCustomColor"
+            class="topic-custom-color"
+            value="${editing?.color?.startsWith('#') ? editing.color : '#E8A33D'}"
+            onchange="selectTopicColor(this.value)"
+            title="Escolher outra cor">
+
+    </div>
+
+    <input
+        type="hidden"
+        id="mTopicColor"
+        value="${editing ? (editing.color || 'amber') : 'amber'}"
+    >
+</div>
+    <div class="field"><label>Progresso manual (%)</label><input type="range" id="mTopicProgress" min="0" max="100" value="${editing?(editing.progress||0):0}" oninput="document.getElementById('mTopicProgressVal').textContent=this.value+'%'"> <span id="mTopicProgressVal" style="font-size:12px;color:var(--text-dim);">${editing?(editing.progress||0):0}%</span></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteTopic('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveTopic('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+
+/*Seletor de Cores na Parte de Conteudos*/
+function selectTopicColor(color){
+
+    const input = document.getElementById('mTopicColor');
+
+    if(!input) return;
+
+    input.value = color;
+
+    document
+        .querySelectorAll('.topic-color-option')
+        .forEach(button => {
+            button.classList.remove('selected');
+        });
+
+    const selected =
+        document.querySelector(
+            `.topic-color-option[data-color="${color}"]`
+        );
+
+    if(selected){
+        selected.classList.add('selected');
+    }
+}
+function saveTopic(id){
+  const name = document.getElementById('mTopicName').value.trim();
+  if(!name){ toast('Dê um nome ao tópico'); return; }
+  const parentId = document.getElementById('mTopicParent').value || null;
+  const color = document.getElementById('mTopicColor').value;
+  const progress = document.getElementById('mTopicProgress').value;
+  if(id){
+    const t = STATE.topics.find(x=>x.id===id);
+    Object.assign(t,{name,parentId,color,progress:Number(progress)});
+  } else {
+    STATE.topics.push({id:uid(), name, parentId, color, progress:Number(progress)});
+  }
+  saveState(); closeModal(); render(); toast('Tópico salvo');
+}
+function deleteTopic(id){
+  const topic = STATE.topics.find(x=>x.id===id);
+  if(!topic) return;
+  const ids = allDescendantIds(id);
+  const childCount = Math.max(0, ids.length-1);
+  showDeleteConfirm({
+    title:'Excluir tópico?',
+    message:`Você está prestes a excluir “${topic.name}”${childCount?` e ${childCount} subtópico(s)`:''}.`,
+    detail:'As anotações vinculadas não serão apagadas; elas apenas serão desvinculadas deste tópico.',
+    onConfirm:()=>{
+      STATE.topics = STATE.topics.filter(t=>!ids.includes(t.id));
+      STATE.notes.forEach(n=>{ if(ids.includes(n.topicId)) n.topicId=null; });
+      saveState(); closeModal(); render(); toast('Tópico excluído');
+    }
+  });
+}
+
+/* =====================================================================
+   ANOTAÇÕES
+===================================================================== */
+let NOTES_FILTER = {topic:null, tag:null, q:''};
+function filterByTopic(id){ NOTES_FILTER.topic=id; render(); }
+function viewAnotacoes(){
+  let notes = STATE.notes.slice().sort((a,b)=>(b.updatedAt||b.createdAt).localeCompare(a.updatedAt||a.createdAt));
+  if(NOTES_FILTER.topic) notes = notes.filter(n=>allDescendantIds(NOTES_FILTER.topic).includes(n.topicId));
+  if(NOTES_FILTER.tag) notes = notes.filter(n=>(n.tags||[]).includes(NOTES_FILTER.tag));
+  if(NOTES_FILTER.q) notes = notes.filter(n=> (n.title+' '+stripHtml(n.html)).toLowerCase().includes(NOTES_FILTER.q.toLowerCase()));
+
+  const allTags = [...new Set(STATE.notes.flatMap(n=>n.tags||[]))];
+
+  return `
+    <div class="filter-bar">
+      <input placeholder="Filtrar por título ou conteúdo..." value="${esc(NOTES_FILTER.q)}" oninput="NOTES_FILTER.q=this.value; renderContentOnly()" style="min-width:220px;">
+      ${NOTES_FILTER.topic?`<span class="filter-chip active">${esc(topicPath(NOTES_FILTER.topic))} <a onclick="NOTES_FILTER.topic=null;render()" style="cursor:pointer;margin-left:4px;">✕</a></span>`:''}
+      ${allTags.slice(0,10).map(t=>`<span class="filter-chip ${NOTES_FILTER.tag===t?'active':''}" onclick="NOTES_FILTER.tag=NOTES_FILTER.tag==='${t}'?null:'${t}';render()">#${esc(t)}</span>`).join('')}
+      <button class="btn btn-primary" style="margin-left:auto;" onclick="openNoteModal()">+ Nova anotação</button>
+    </div>
+    <div id="notesGridWrap">
+      ${notes.length? `<div class="notes-grid">${notes.map(renderNoteCard).join('')}</div>` : `<div class="card"><div class="empty-state"><div class="ic">📝</div><div class="t">Nenhuma anotação encontrada</div><div class="d">Ajuste os filtros ou crie sua primeira anotação.</div></div></div>`}
+    </div>
+  `;
+}
+function renderContentOnly(){
+  const c = document.getElementById('content');
+  const scroll = window.scrollY;
+  c.innerHTML = renderRoute();
+}
+function renderNoteCard(n){
+  const snippet = stripHtml(n.html).slice(0,110);
+  return `
+    <div class="note-card" onclick="openNoteModal('${n.id}')">
+      <div class="head">
+        <span class="title">${esc(n.title||'Sem título')}</span>
+        <span style="font-size:14px;">${n.favorite?'⭐':''}</span>
+      </div>
+      <div class="snippet">${esc(snippet)||'<em>Sem conteúdo</em>'}</div>
+      <div class="meta">
+        ${n.topicId?`<span class="pill pill-amber">${esc(topicPath(n.topicId))}</span>`:''}
+        ${(n.tags||[]).slice(0,3).map(t=>`<span class="tag-chip">#${esc(t)}</span>`).join('')}
+        <span style="margin-left:auto;">${fmtDateShort(n.createdAt)}</span>
+      </div>
+    </div>`;
+}
+function openNoteModal(id=null, forDate=null){
+  const editing = id ? STATE.notes.find(n=>n.id===id) : null;
+  const topicOpts = STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('');
+  const checklist = editing?.checklist || [];
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar anotação':'Nova anotação'}</h2>
+      <div style="display:flex;gap:6px;">
+        <button class="icon-btn" title="Favoritar" onclick="toggleModalFav()"><span id="mNoteFavIc">${editing&&editing.favorite?'⭐':'☆'}</span></button>
+        <button class="icon-btn" onclick="closeModal()">✕</button>
+      </div>
+    </div>
+    <input type="hidden" id="mNoteFav" value="${editing&&editing.favorite?'1':'0'}">
+    <div class="field"><input id="mNoteTitle" placeholder="Título (opcional)" value="${editing?esc(editing.title):''}" style="font-size:16px;font-weight:600;padding:10px 12px;" autofocus></div>
+    <div class="field-row">
+      <div class="field"><label>Área / Tópico</label><select id="mNoteTopic"><option value="">— Nenhum —</option>${topicOpts}</select></div>
+      <div class="field"><label>Prioridade</label><select id="mNotePriority">
+        <option value="normal" ${editing&&editing.priority==='normal'?'selected':''}>Normal</option>
+        <option value="alta" ${editing&&editing.priority==='alta'?'selected':''}>Alta</option>
+        <option value="baixa" ${editing&&editing.priority==='baixa'?'selected':''}>Baixa</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Tags (separadas por vírgula)</label><input id="mNoteTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="revisar, prova, resumo..."></div>
+
+    <div class="field">
+      <label>Conteúdo</label>
+      <div class="editor-toolbar">
+        <button type="button" title="Título" onmousedown="event.preventDefault()" onclick="ed('formatBlock','H2')">H2</button>
+        <button type="button" title="Subtítulo" onmousedown="event.preventDefault()" onclick="ed('formatBlock','H3')">H3</button>
+        <div class="sep"></div>
+        <button type="button" title="Negrito" onmousedown="event.preventDefault()" onclick="ed('bold')"><b>B</b></button>
+        <button type="button" title="Itálico" onmousedown="event.preventDefault()" onclick="ed('italic')"><i>I</i></button>
+        <button type="button" title="Sublinhado" onmousedown="event.preventDefault()" onclick="ed('underline')"><u>U</u></button>
+        <div class="sep"></div>
+        <button type="button" title="Lista" onmousedown="event.preventDefault()" onclick="ed('insertUnorderedList')">•≡</button>
+        <button type="button" title="Lista numerada" onmousedown="event.preventDefault()" onclick="ed('insertOrderedList')">1≡</button>
+        <button type="button" title="Citação" onmousedown="event.preventDefault()" onclick="ed('formatBlock','BLOCKQUOTE')">❝</button>
+        <button type="button" title="Código" onmousedown="event.preventDefault()" onclick="ed('formatBlock','PRE')">&lt;/&gt;</button>
+        <div class="sep"></div>
+        <button type="button" title="Link" onmousedown="event.preventDefault()" onclick="edLink()">🔗</button>
+        <button type="button" title="Imagem (URL)" onmousedown="event.preventDefault()" onclick="edImage()">🖼️</button>
+        <button type="button" title="Separador" onmousedown="event.preventDefault()" onclick="ed('insertHorizontalRule')">―</button>
+        <div class="sep"></div>
+        <button type="button" title="Limpar formatação" onmousedown="event.preventDefault()" onclick="ed('removeFormat')">⨯</button>
+      </div>
+      <div class="editor-body" id="mNoteBody" contenteditable="true" data-placeholder="Comece a escrever...">${editing?sanitizeNoteHtml(editing.html||''):''}</div>
+    </div>
+
+    <div class="field">
+      <label>Checklist</label>
+      <div id="mNoteChecklist">${checklist.map((c,i)=>checklistRowHtml(c,i)).join('')}</div>
+      <button type="button" class="btn btn-sm" style="margin-top:6px;" onclick="addChecklistRow()">+ item</button>
+    </div>
+
+    <div class="field-row">
+      <div class="field" style="display:flex;align-items:center;gap:10px;">
+        <label style="margin:0;">Marcar para revisão</label>
+        <div class="toggle ${editing&&editing.reviewOn?'on':''}" id="mNoteReviewToggle" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteNote('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveNote('${id||''}','${forDate||''}')">Salvar anotação</button>
+    </div>
+  `, true);
+}
+function toggleModalFav(){
+  const el = document.getElementById('mNoteFav');
+  el.value = el.value==='1'?'0':'1';
+  document.getElementById('mNoteFavIc').textContent = el.value==='1'?'⭐':'☆';
+}
+function checklistRowHtml(c,i){
+  return `<div class="checklist-row" data-idx="${i}"><input type="checkbox" ${c.done?'checked':''}><input type="text" value="${esc(c.text)}" style="flex:1;background:none;border:none;padding:2px;" placeholder="item"><button type="button" class="icon-btn btn-sm" onclick="this.parentElement.remove()">✕</button></div>`;
+}
+function addChecklistRow(){
+  const wrap = document.getElementById('mNoteChecklist');
+  const div = document.createElement('div');
+  div.innerHTML = checklistRowHtml({text:'',done:false}, wrap.children.length);
+  wrap.appendChild(div.firstElementChild);
+}
+function ed(cmd, val){ document.getElementById('mNoteBody').focus(); document.execCommand(cmd, false, val||null); }
+function edLink(){ const url = prompt('URL do link:'); if(url) ed('createLink', url); }
+function edImage(){ const url = prompt('URL da imagem:'); if(url) ed('insertImage', url); }
+
+function saveNote(id, forDate){
+  const title = document.getElementById('mNoteTitle').value.trim();
+  const html = sanitizeNoteHtml(document.getElementById('mNoteBody').innerHTML);
+  const topicId = document.getElementById('mNoteTopic').value || null;
+  const priority = document.getElementById('mNotePriority').value;
+  const tags = document.getElementById('mNoteTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  const favorite = document.getElementById('mNoteFav').value==='1';
+  const reviewOn = document.getElementById('mNoteReviewToggle').classList.contains('on');
+  const checklist = [...document.querySelectorAll('#mNoteChecklist .checklist-row')].map(row=>({
+    done: row.querySelector('input[type=checkbox]').checked,
+    text: row.querySelector('input[type=text]').value
+  })).filter(c=>c.text.trim());
+
+  if(!title && stripHtml(html).trim()===''){ toast('Escreva algo antes de salvar'); return; }
+
+  const now = new Date().toISOString();
+  if(id){
+    const n = STATE.notes.find(x=>x.id===id);
+    Object.assign(n, {title,html,topicId,priority,tags,favorite,updatedAt:now});
+    if(reviewOn && !n.reviewOn){ n.reviewOn=true; n.interval=0; n.nextReview=todayISO(); }
+    if(!reviewOn) n.reviewOn=false;
+    n.checklist = checklist;
+  } else {
+    STATE.notes.push({
+      id:uid(), title, html, topicId, priority, tags, favorite, checklist,
+      reviewOn, interval:0, nextReview: reviewOn?todayISO():null,
+      createdAt: isValidDateOnly(forDate) ? new Date(forDate+'T12:00:00').toISOString() : now,
+      updatedAt: now
+    });
+  }
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Anotação salva');
+}
+function deleteNote(id){
+  const note = STATE.notes.find(x=>x.id===id);
+  if(!note) return;
+  showDeleteConfirm({
+    title:'Excluir anotação?',
+    message:`A anotação “${note.title||'Sem título'}” será excluída.`,
+    detail:'Esta ação não pode ser desfeita.',
+    onConfirm:()=>{ STATE.notes = STATE.notes.filter(n=>n.id!==id); saveState(); closeModal(); render(); toast('Anotação excluída'); }
+  });
+}
+
+/* =====================================================================
+   METAS
+===================================================================== */
+function goalPriorityScore(g){return {alta:0,normal:1,baixa:2}[g.priority]??1;}
+function moveGoalRank(id,delta){
+  const goal=STATE.goals.find(g=>g.id===id);if(!goal)return;
+  const peers=STATE.goals.filter(g=>g.topicId===goal.topicId&&g.priority===goal.priority).sort((a,b)=>(a.rank||0)-(b.rank||0)||(a.createdAt||'').localeCompare(b.createdAt||''));
+  const i=peers.findIndex(g=>g.id===id),j=i+delta;if(j<0||j>=peers.length)return;
+  [peers[i],peers[j]]=[peers[j],peers[i]];peers.forEach((g,n)=>g.rank=n+1);saveState();render();
+}
+function viewMetas(){
+  const groups=new Map();STATE.goals.forEach(g=>{const key=g.topicId||'none';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(g);});
+  const priorityGroups=[['alta','🔴 Alta prioridade'],['normal','🟡 Média prioridade'],['baixa','🟢 Baixa prioridade']];
+  return `<div class="goals-head"><div><h2>Prioridades por área</h2><p>Organize o que é mais importante dentro de cada matéria e ajuste a ordem com as setas.</p></div><button class="btn btn-primary" onclick="openGoalModal()">+ Nova meta</button></div>
+  ${!STATE.goals.length?'<div class="card empty-state">Nenhuma meta cadastrada. Crie sua primeira meta para começar.</div>':''}
+  ${[...groups].map(([key,items])=>{
+    const area=key==='none'?'Sem área definida':topicPath(key)||'Área removida';
+    return `<section class="card goal-area"><div class="goal-area-head"><h3>📚 ${esc(area)}</h3><span>${items.filter(g=>g.status==='concluida').length}/${items.length} concluídas</span></div>
+    ${priorityGroups.map(([priority,label])=>{const peers=items.filter(g=>g.priority===priority).sort((a,b)=>(a.rank||0)-(b.rank||0)||(a.createdAt||'').localeCompare(b.createdAt||''));
+      return !peers.length?'':`<div class="goal-priority-group priority-${priority}"><h4>${label} <small>${peers.length}</small></h4>${peers.map((g,i)=>{const done=g.checklist.filter(c=>c.done).length,pct=g.checklist.length?Math.round(done/g.checklist.length*100):g.progress||0;return `<div class="goal-priority-item"><span class="goal-order">${i+1}</span><div class="goal-item-main" role="button" tabindex="0" onclick="openGoalModal('${g.id}')" onkeydown="if(event.key==='Enter')openGoalModal('${g.id}')"><strong>${esc(g.title)}</strong><small>${g.status==='concluida'?'✓ Concluída':g.status==='pausada'?'Pausada':'Em andamento'} · ${pct}%${g.deadline?' · '+fmtDateShort(g.deadline):''}</small></div><div class="goal-reorder"><button class="icon-btn" aria-label="Subir prioridade" title="Subir" onclick="moveGoalRank('${g.id}',-1)" ${i===0?'disabled':''}>↑</button><button class="icon-btn" aria-label="Descer prioridade" title="Descer" onclick="moveGoalRank('${g.id}',1)" ${i===peers.length-1?'disabled':''}>↓</button></div></div>`}).join('')}</div>`}).join('')}</section>`}).join('')}`;
+}
+function openGoalModal(id=null){
+  const editing = id? STATE.goals.find(g=>g.id===id): null;
+  const topicOpts = STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('');
+  const checklist = editing?.checklist || [];
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar meta':'Nova meta'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Título</label><input id="mGoalTitle" value="${editing?esc(editing.title):''}" placeholder="Ex: Terminar o curso de JavaScript" autofocus></div>
+    <div class="field"><label>Descrição</label><textarea id="mGoalDesc" rows="2" placeholder="Detalhes (opcional)">${editing?esc(editing.description||''):''}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>Prazo</label><input type="date" id="mGoalDeadline" value="${editing?editing.deadline||'':''}"></div>
+      <div class="field"><label>Prioridade</label><select id="mGoalPriority">
+        <option value="normal" ${editing&&editing.priority==='normal'?'selected':''}>Normal</option>
+        <option value="alta" ${editing&&editing.priority==='alta'?'selected':''}>Alta</option>
+        <option value="baixa" ${editing&&editing.priority==='baixa'?'selected':''}>Baixa</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Área relacionada</label><select id="mGoalTopic"><option value="">— Nenhuma —</option>${topicOpts}</select></div>
+    <div class="field"><label>Status</label><select id="mGoalStatus">
+      <option value="andamento" ${!editing||editing.status==='andamento'?'selected':''}>Em andamento</option>
+      <option value="concluida" ${editing&&editing.status==='concluida'?'selected':''}>Concluída</option>
+      <option value="pausada" ${editing&&editing.status==='pausada'?'selected':''}>Pausada</option>
+    </select></div>
+    <div class="field">
+      <label>Etapas (checklist)</label>
+      <div id="mGoalChecklist">${checklist.map((c,i)=>checklistRowHtml(c,i)).join('')}</div>
+      <button type="button" class="btn btn-sm" style="margin-top:6px;" onclick="addGoalChecklistRow()">+ etapa</button>
+    </div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteGoal('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveGoal('${id||''}')">Salvar meta</button>
+    </div>
+  `);
+}
+function addGoalChecklistRow(){
+  const wrap = document.getElementById('mGoalChecklist');
+  const div = document.createElement('div');
+  div.innerHTML = checklistRowHtml({text:'',done:false}, wrap.children.length);
+  wrap.appendChild(div.firstElementChild);
+}
+function saveGoal(id){
+  const title = document.getElementById('mGoalTitle').value.trim();
+  if(!title){ toast('Dê um título à meta'); return; }
+  const description = document.getElementById('mGoalDesc').value;
+  const rawDeadline=document.getElementById('mGoalDeadline').value; const deadline=rawDeadline&&isValidDateOnly(rawDeadline)?rawDeadline:null;
+  const priority = document.getElementById('mGoalPriority').value;
+  const topicId = document.getElementById('mGoalTopic').value || null;
+  const status = document.getElementById('mGoalStatus').value;
+  const checklist = [...document.querySelectorAll('#mGoalChecklist .checklist-row')].map(row=>({
+    done: row.querySelector('input[type=checkbox]').checked,
+    text: row.querySelector('input[type=text]').value
+  })).filter(c=>c.text.trim());
+  const now = new Date().toISOString();
+  if(id){
+    const g = STATE.goals.find(x=>x.id===id);
+    Object.assign(g,{title,description,deadline,priority,topicId,status,checklist,updatedAt:now});
+  } else {
+    STATE.goals.push({id:uid(),title,description,deadline,priority,rank:Date.now(),topicId,status,checklist,createdAt:now,updatedAt:now});
+  }
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Meta salva');
+}
+function deleteGoal(id){
+  const goal = STATE.goals.find(x=>x.id===id);
+  if(!goal) return;
+  showDeleteConfirm({
+    title:'Excluir meta?',
+    message:`A meta “${goal.title||'Sem título'}” será excluída.`,
+    detail:'Todos os dados e checklist desta meta serão removidos.',
+    onConfirm:()=>{ STATE.goals = STATE.goals.filter(g=>g.id!==id); saveState(); closeModal(); render(); toast('Meta excluída'); }
+  });
+}
+
+/* =====================================================================
+   REVISÕES
+===================================================================== */
+function getDueReviews(){
+  return STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview<=todayISO());
+}
+function viewRevisoes(){
+  const due = STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview<=todayISO()).sort((a,b)=>a.nextReview.localeCompare(b.nextReview));
+  const upcoming = STATE.notes.filter(n=>n.reviewOn && n.nextReview && n.nextReview>todayISO()).sort((a,b)=>a.nextReview.localeCompare(b.nextReview));
+  const overdueCount = due.filter(n=>n.nextReview<todayISO()).length;
+  return `
+    <div class="stat-row" style="grid-template-columns:repeat(3,1fr);">
+      <div class="stat-card"><div class="num" style="color:var(--red)">${overdueCount}</div><div class="lbl">atrasadas</div></div>
+      <div class="stat-card"><div class="num" style="color:var(--amber)">${due.length-overdueCount}</div><div class="lbl">para revisar hoje</div></div>
+      <div class="stat-card"><div class="num">${upcoming.length}</div><div class="lbl">agendadas</div></div>
+    </div>
+    <div class="section-title">📖 Revisões pendentes</div>
+    <div class="card" style="padding:6px 16px; margin-bottom:20px;">
+      ${due.length? due.map(n=>`
+        <div class="list-row">
+          <span class="pill ${n.nextReview<todayISO()?'pill-red':'pill-amber'}">${n.nextReview<todayISO()?'atrasada':'hoje'}</span>
+          <span style="flex:1;font-size:13px;cursor:pointer;" onclick="openNoteModal('${n.id}')">${esc(n.title||'Sem título')}</span>
+          ${n.topicId?`<span class="tag-chip">${esc(topicPath(n.topicId))}</span>`:''}
+          <button class="btn btn-sm" onclick="markReviewed('${n.id}')">✓ Revisado</button>
+        </div>`).join('') : emptyRow('Tudo em dia! 🎉')}
+    </div>
+    <div class="section-title">Próximas revisões</div>
+    <div class="card" style="padding:6px 16px;">
+      ${upcoming.length? upcoming.slice(0,12).map(n=>`
+        <div class="list-row">
+          <span style="flex:1;font-size:13px;">${esc(n.title||'Sem título')}</span>
+          <span style="font-size:11.5px;color:var(--text-faint);">${fmtDateShort(n.nextReview)}</span>
+        </div>`).join('') : emptyRow('Nenhuma revisão futura agendada.')}
+    </div>
+  `;
+}
+function markReviewed(id){
+  const n=STATE.notes.find(x=>x.id===id);
+  if(!n)return;
+  const intervals=(STATE.settings.reviewIntervals||[1,3,7,16,35]).filter(x=>Number.isFinite(Number(x))&&Number(x)>0);
+  if(!intervals.length){toast('Configure os intervalos de revisão antes de continuar.');return;}
+  const currentIndex=Math.max(0,Math.min(Math.floor(Number(n.interval)||0),intervals.length-1));
+  const days=Math.max(1,Number(intervals[currentIndex])||1);
+  const next=new Date();next.setHours(12,0,0,0);next.setDate(next.getDate()+days);
+  n.nextReview=localDateISO(next);
+  n.interval=Math.min(currentIndex+1,intervals.length-1);
+  n.reviewHistory=Array.isArray(n.reviewHistory)?n.reviewHistory:[];
+  n.reviewHistory.push({date:todayISO(),intervalDays:days,nextReview:n.nextReview});
+  if(n.reviewHistory.length>500)n.reviewHistory=n.reviewHistory.slice(-500);
+  n.updatedAt=new Date().toISOString();
+  saveState();render();toast('Revisão registrada · próxima em '+days+' dias');
+}
+
+/* =====================================================================
+   SESSÕES / POMODORO
+===================================================================== */
+function viewSessoes(){
+  const sessions = STATE.sessions.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,40);
+  const p=STATE.settings.pomodoro;
+  const activeLabel=TIMER.planType==='cycle'
+    ? `${TIMER.cycleId?esc((p.cycles.find(c=>c.id===TIMER.cycleId)||{}).name||'Ciclo'): 'Ciclo'} · foco ${TIMER.currentWorkMinutes} min / pausa ${TIMER.currentBreakMinutes} min · ${TIMER.cycleRound}/${TIMER.cycleRepeats}`
+    : esc((p.presets.find(x=>x.id===TIMER.presetId)||{}).name||'Timer');
+  return `
+    <div class="grid sessions-page-grid">
+      <div class="card timer-card sessions-timer-card">
+        <div class="timer-status-label">${TIMER.mode==='work'?'Foco':'Pausa'}${TIMER.topicId?' · '+esc(topicPath(TIMER.topicId)):''}</div>
+        <div class="pomodoro-time" id="pomodoroDisplay">${fmtTimer(TIMER.remaining)}</div>
+        <div class="timer-plan-label">${activeLabel}</div>
+        <div class="timer-progress"><div id="timerProgressBar"></div></div>
+        <div class="timer-main-actions">
+          <button class="btn btn-primary" onclick="${TIMER.running?'pauseTimer()':'startTimer()'}">${TIMER.running?'⏸ Pausar':'▶ Iniciar'}</button>
+          <button class="btn" onclick="resetTimer()">↺ Zerar</button>
+        </div>
+        <div class="timer-quick-title">Timers</div>
+        <div class="timer-presets">
+          ${p.presets.map(x=>`<button class="btn btn-sm ${TIMER.planType==='preset'&&TIMER.presetId===x.id?'active-timer':''}" onclick="selectTimerPreset('${x.id}')">${esc(x.name)} <span>${x.work}/${x.brk}</span></button>`).join('')}
+          ${p.cycles.map(x=>`<button class="btn btn-sm timer-cycle-btn ${TIMER.planType==='cycle'&&TIMER.cycleId===x.id?'active-timer':''}" onclick="selectTimerCycle('${x.id}')">🔁 ${esc(x.name)}</button>`).join('')}
+        </div>
+        <div style="margin-top:12px;"><button class="btn btn-ghost btn-sm" onclick="navigate('config')">⚙ Gerenciar timers e ciclos</button></div>
+        <div class="field" style="margin-top:14px;text-align:left;">
+          <label>Área desta sessão</label>
+          <select id="timerTopic" onchange="TIMER.topicId=this.value||null">
+            <option value="">— Nenhuma —</option>
+            ${STATE.topics.map(t=>`<option value="${t.id}" ${TIMER.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div>
+        <div class="sessions-list-head">
+          <div class="section-title" style="margin:0;">Sessões registradas</div>
+          <button class="btn btn-primary btn-sm" onclick="openSessionModal()">+ Registrar manualmente</button>
+        </div>
+        <div class="card session-list-card">
+          ${sessions.length? sessions.map(s=>`
+            <div class="list-row session-list-row">
+              <span class="session-date">${fmtDateShort(s.date)}</span>
+              <span class="session-topic">${s.topicId?esc(topicPath(s.topicId)):'Sem área'}</span>
+              <span class="pill pill-teal">${minutesToHM(s.duration||0)}</span>
+              <button class="icon-btn btn-sm btn-trash" title="Excluir sessão" aria-label="Excluir sessão" onclick="deleteSession('${s.id}')">🗑</button>
+            </div>`).join('') : emptyRow('Nenhuma sessão registrada ainda.')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function timerStorageKey(){return CURRENT_USER?'central-estudos-timer-v1:'+CURRENT_USER.id:null;}
+function persistTimerRuntime(){
+  const key=timerStorageKey();if(!key)return;
+  try{
+    localStorage.setItem(key,JSON.stringify({
+      planType:TIMER.planType,presetId:TIMER.presetId,cycleId:TIMER.cycleId,mode:TIMER.mode,
+      remaining:TIMER.remaining,endAt:TIMER.endAt,running:TIMER.running,hasStarted:TIMER.hasStarted,
+      topicId:TIMER.topicId,cycleStepIndex:TIMER.cycleStepIndex,cycleRound:TIMER.cycleRound
+    }));
+  }catch(e){console.warn('Não foi possível preservar o estado do timer neste navegador.',e);}
+}
+function restoreTimerRuntime(){
+  const key=timerStorageKey();if(!key)return;
+  try{
+    const raw=localStorage.getItem(key);if(!raw)return;
+    const saved=JSON.parse(raw);
+    if(saved.planType==='cycle'&&getCycleById(saved.cycleId)){
+      const c=getCycleById(saved.cycleId);TIMER.planType='cycle';TIMER.cycleId=c.id;TIMER.cycleSteps=c.steps.map(s=>({...s}));TIMER.cycleRepeats=c.repeats;
+    }else{
+      const p=getPresetById(saved.presetId)||STATE.settings.pomodoro.presets[0];
+      if(!p)return;
+      TIMER.planType='preset';TIMER.presetId=p.id;TIMER.cycleId=null;TIMER.cycleSteps=[];TIMER.cycleRepeats=1;
+    }
+    TIMER.topicId=STATE.topics.some(t=>t.id===saved.topicId)?saved.topicId:null;
+    TIMER.mode=saved.mode==='break'?'break':'work';
+    TIMER.cycleStepIndex=Math.max(0,Math.min(Math.max(0,TIMER.cycleSteps.length-1),Number(saved.cycleStepIndex)||0));
+    TIMER.cycleRound=Math.max(1,Math.min(TIMER.cycleRepeats,Number(saved.cycleRound)||1));
+    const step=TIMER.planType==='cycle'?(TIMER.cycleSteps[TIMER.cycleStepIndex]||TIMER.cycleSteps[0]):getPresetById(TIMER.presetId);
+    if(!step)return;
+    TIMER.currentWorkMinutes=step.work;TIMER.currentBreakMinutes=step.brk;
+    const phaseTotal=(TIMER.mode==='work'?step.work:step.brk)*60;
+    TIMER.remaining=Math.max(0,Math.min(phaseTotal,Number(saved.remaining)||0));
+    const hadRunningDeadline=!!saved.running&&Number.isFinite(Number(saved.endAt));
+    TIMER.running=hadRunningDeadline&&Number(saved.endAt)>Date.now();
+    TIMER.endAt=TIMER.running?Number(saved.endAt):null;
+    if(hadRunningDeadline)TIMER.remaining=Math.max(0,Math.min(phaseTotal,Math.ceil((Number(saved.endAt)-Date.now())/1000)));
+    TIMER.hasStarted=!!saved.hasStarted||TIMER.running;
+    if(TIMER.running){TIMER.intervalId=setInterval(()=>{
+      if(!TIMER.running||!TIMER.endAt)return;
+      TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+      if(TIMER.remaining<=0)handleTimerPhaseEnd();
+      refreshTimerDisplay();
+    },250);}
+  }catch(e){console.warn('Estado anterior do timer ignorado.',e);}
+}
+function fmtTimer(sec){const safe=Math.max(0,Math.floor(Number(sec)||0)),m=Math.floor(safe/60),s=safe%60;return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
+function refreshTimerDisplay(){
+  const value=fmtTimer(TIMER.remaining);
+  const el=document.getElementById('pomodoroDisplay'); if(el) el.textContent=value;
+  const global=document.getElementById('globalTimerDisplay'); if(global) global.textContent=value;
+  const status=document.getElementById('globalTimerStatus'); if(status) status.textContent=TIMER.running?'Em andamento':(TIMER.hasStarted?'Pausado':'Pronto');
+  const toggle=document.getElementById('globalTimerToggle');
+  if(toggle){
+    toggle.textContent=TIMER.running?'⏸':'▶';
+    toggle.title=TIMER.running?'Pausar timer':'Continuar timer';
+    toggle.setAttribute('aria-label',TIMER.running?'Pausar timer':'Continuar timer');
+  }
+  const modeEls=document.querySelectorAll('.sidebar-timer-mode'); modeEls.forEach(el=>el.textContent=TIMER.mode==='work'?'Foco':'Pausa');
+  const bar=document.getElementById('timerProgressBar');
+  if(bar){ const total=Math.max(1,(TIMER.mode==='work'?TIMER.currentWorkMinutes:TIMER.currentBreakMinutes)*60); bar.style.width=Math.max(0,Math.min(100,(TIMER.remaining/total)*100))+'%'; }
+}
+function toggleSidebarTimer(event){
+  if(event){
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if(TIMER.running) pauseTimer();
+  else startTimer();
+}
+function getPresetById(id){ return STATE.settings.pomodoro.presets.find(x=>x.id===id)||STATE.settings.pomodoro.presets[0]; }
+function getCycleById(id){ return STATE.settings.pomodoro.cycles.find(x=>x.id===id)||STATE.settings.pomodoro.cycles[0]; }
+function selectTimerPreset(id){
+  const p=getPresetById(id);if(!p)return;
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.planType='preset';TIMER.presetId=p.id;TIMER.cycleId=null;TIMER.cycleSteps=[];TIMER.cycleRepeats=1;TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';TIMER.currentWorkMinutes=p.work;TIMER.currentBreakMinutes=p.brk;TIMER.remaining=p.work*60;
+  persistTimerRuntime();render();
+}
+function selectTimerCycle(id){
+  const c=getCycleById(id);if(!c)return;
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.planType='cycle';TIMER.cycleId=c.id;TIMER.presetId=null;TIMER.cycleSteps=c.steps.map(x=>({work:x.work,brk:x.brk}));TIMER.cycleRepeats=c.repeats;TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';TIMER.currentWorkMinutes=TIMER.cycleSteps[0].work;TIMER.currentBreakMinutes=TIMER.cycleSteps[0].brk;TIMER.remaining=TIMER.currentWorkMinutes*60;
+  persistTimerRuntime();render();
+}
+function startTimer(){
+  if(TIMER.running)return;
+  TIMER.hasStarted=true;
+  TIMER.running=true;
+  TIMER.endAt=Date.now()+Math.max(0,TIMER.remaining)*1000;
+  clearInterval(TIMER.intervalId);
+  TIMER.intervalId=setInterval(()=>{
+    if(!TIMER.running||!TIMER.endAt)return;
+    TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+    if(TIMER.remaining<=0)handleTimerPhaseEnd();
+    refreshTimerDisplay();
+  },250);
+  persistTimerRuntime();
+  if(ROUTE==='sessoes')render();else refreshTimerDisplay();
+}
+function handleTimerPhaseEnd(){
+  // O fim de cada fase é processado uma única vez, mesmo que a aba tenha ficado suspensa.
+  clearInterval(TIMER.intervalId);
+  if(TIMER.mode==='work'){
+    const minutes=TIMER.currentWorkMinutes;
+    logAutoSession(minutes);
+    TIMER.mode='break';
+    TIMER.currentBreakMinutes=Math.max(0,TIMER.currentBreakMinutes);
+    TIMER.remaining=TIMER.currentBreakMinutes*60;
+    TIMER.endAt=TIMER.running?Date.now()+TIMER.remaining*1000:null;
+    if(TIMER.currentBreakMinutes>0){
+      if(ROUTE==='sessoes')render();
+      showStudyBreakOverlay(minutes);
+    }else{
+      advanceTimerCycle();
+    }
+  }else{
+    advanceTimerCycle();
+  }
+  if(TIMER.running)TIMER.intervalId=setInterval(()=>{
+    if(!TIMER.running||!TIMER.endAt)return;
+    TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+    if(TIMER.remaining<=0)handleTimerPhaseEnd();
+    refreshTimerDisplay();
+  },250);
+  persistTimerRuntime();
+}
+function advanceTimerCycle(){
+  if(TIMER.planType==='cycle'){
+    TIMER.cycleStepIndex++;
+    if(TIMER.cycleStepIndex>=TIMER.cycleSteps.length){
+      if(TIMER.cycleRound<TIMER.cycleRepeats){ TIMER.cycleRound++; TIMER.cycleStepIndex=0; }
+      else { finishTimerCycle(); return; }
+    }
+    const step=TIMER.cycleSteps[TIMER.cycleStepIndex]; TIMER.mode='work'; TIMER.currentWorkMinutes=step.work; TIMER.currentBreakMinutes=step.brk; TIMER.remaining=step.work*60;
+  }else{
+    const preset=getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk};
+    TIMER.mode='work'; TIMER.currentWorkMinutes=preset.work; TIMER.currentBreakMinutes=preset.brk; TIMER.remaining=TIMER.currentWorkMinutes*60;
+  }
+  TIMER.endAt=TIMER.running?Date.now()+TIMER.remaining*1000:null;
+  persistTimerRuntime();
+  if(ROUTE==='sessoes')render();
+}
+function finishTimerCycle(){
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.mode='work';TIMER.cycleStepIndex=0;TIMER.cycleRound=1;
+  const first=TIMER.cycleSteps[0]||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk};
+  TIMER.currentWorkMinutes=first.work;TIMER.currentBreakMinutes=first.brk;TIMER.remaining=first.work*60;
+  persistTimerRuntime();showTimerFinishedOverlay();
+  if(ROUTE==='sessoes')render();else refreshTimerDisplay();
+}
+function showStudyBreakOverlay(minutes){
+  const old=document.getElementById('timerTransitionOverlay'); if(old)old.remove();
+  const overlay=document.createElement('div'); overlay.id='timerTransitionOverlay'; overlay.className='timer-transition-overlay';
+  overlay.innerHTML=`<div class="timer-transition-card">
+    <div class="timer-transition-orbit"><div class="timer-transition-icon">✓</div><span></span><span></span><span></span></div>
+    <div class="timer-transition-kicker">FOCO CONCLUÍDO</div>
+    <h2>Excelente trabalho.</h2>
+    <p>Seu bloco de <strong>${minutes} min</strong> terminou. Agora é hora de respirar, levantar e descansar.</p>
+    <div class="timer-break-box"><span class="timer-break-icon">☕</span><div><small>PAUSA INICIADA</small><strong>${TIMER.currentBreakMinutes} min de descanso</strong></div><b>${fmtTimer(TIMER.remaining)}</b></div>
+    <button class="btn btn-primary" onclick="closeTimerOverlay()">Continuar</button>
+  </div>`;
+  document.body.appendChild(overlay);
+  setTimeout(()=>overlay.classList.add('show'),20);
+  if(window.AudioContext||window.webkitAudioContext){try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=660;g.gain.setValueAtTime(.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(.08,ctx.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.45);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.5);}catch(e){}}
+}
+function showTimerFinishedOverlay(){
+  const old=document.getElementById('timerTransitionOverlay');if(old)old.remove();
+  const overlay=document.createElement('div'); overlay.id='timerTransitionOverlay'; overlay.className='timer-transition-overlay';
+  overlay.innerHTML=`<div class="timer-transition-card timer-finished-card"><div class="timer-complete-mark">★</div><div class="timer-transition-kicker">CICLO CONCLUÍDO</div><h2>Você terminou o ciclo.</h2><p>Seu plano de estudos foi concluído. Aproveite a sensação de progresso — e descanse antes do próximo bloco.</p><button class="btn btn-primary" onclick="closeTimerOverlay()">Finalizar</button></div>`;
+  document.body.appendChild(overlay); setTimeout(()=>overlay.classList.add('show'),20);
+}
+function closeTimerOverlay(){const el=document.getElementById('timerTransitionOverlay');if(el){el.classList.remove('show');setTimeout(()=>el.remove(),180);}}
+function logAutoSession(duration){
+  STATE.sessions.push({id:uid(), topicId:TIMER.topicId, date:todayISO(), duration, observation:'Timer automático', createdAt:new Date().toISOString()});
+  saveState();
+}
+function pauseTimer(){
+  if(TIMER.running&&TIMER.endAt)TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+  TIMER.running=false;TIMER.endAt=null;clearInterval(TIMER.intervalId);
+  persistTimerRuntime();refreshTimerDisplay();if(ROUTE==='sessoes')render();
+}
+function resetTimer(){
+  clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;TIMER.mode='work';TIMER.cycleStepIndex=0;TIMER.cycleRound=1;
+  if(TIMER.planType==='cycle'){const c=getCycleById(TIMER.cycleId);if(c){TIMER.cycleSteps=c.steps.map(x=>({...x}));TIMER.cycleRepeats=c.repeats;}}
+  const first=TIMER.planType==='cycle'?(TIMER.cycleSteps[0]||{work:25,brk:5}):getPresetById(TIMER.presetId)||{work:STATE.settings.pomodoro.work,brk:STATE.settings.pomodoro.brk};
+  TIMER.currentWorkMinutes=first.work;TIMER.currentBreakMinutes=first.brk;TIMER.remaining=first.work*60;
+  persistTimerRuntime();if(ROUTE==='sessoes')render();else refreshTimerDisplay();
+}
+function setPreset(work,brk){ addTimerPresetDirect('Timer rápido',work,brk); }
+function customPreset(){ navigate('config'); setTimeout(()=>document.getElementById('timerPresetName')?.focus(),50); }
+
+function openSessionModal(id=null, forDate=null){
+  const editing = id? STATE.sessions.find(s=>s.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar sessão':'Registrar sessão de estudo'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Área / Tópico</label><select id="mSessTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Data</label><input type="date" id="mSessDate" value="${editing?editing.date:(forDate||todayISO())}"></div>
+      <div class="field"><label>Duração (minutos)</label><input type="number" id="mSessDuration" value="${editing?editing.duration:30}" min="1"></div>
+    </div>
+    <div class="field"><label>Observações</label><textarea id="mSessObs" rows="2">${editing?esc(editing.observation||''):''}</textarea></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteSession('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveSession('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveSession(id){
+  const topicId = document.getElementById('mSessTopic').value || null;
+  const rawDate=document.getElementById('mSessDate').value; const date=isValidDateOnly(rawDate)?rawDate:todayISO();
+  const duration = Number(document.getElementById('mSessDuration').value)||0;
+  const observation = document.getElementById('mSessObs').value;
+  if(id){
+    Object.assign(STATE.sessions.find(s=>s.id===id), {topicId,date,duration,observation});
+  } else {
+    STATE.sessions.push({id:uid(),topicId,date,duration,observation,createdAt:new Date().toISOString()});
+  }
+  saveState(); closeModal(); render(); toast('Sessão salva');
+}
+function deleteSession(id){
+  const session = STATE.sessions.find(x=>x.id===id);
+  if(!session) return;
+  showDeleteConfirm({
+    title:'Excluir sessão?',
+    message:`A sessão de ${minutesToHM(session.duration||0)} será excluída.`,
+    detail:'Ela deixará de contar no tempo total e nas estatísticas de estudo.',
+    onConfirm:()=>{ STATE.sessions = STATE.sessions.filter(s=>s.id!==id); saveState(); closeModal(); render(); toast('Sessão excluída'); }
+  });
+}
+
+/* =====================================================================
+   DÚVIDAS
+===================================================================== */
+function viewDuvidas(){
+  const open = STATE.doubts.filter(d=>d.status!=='resolvida');
+  const closed = STATE.doubts.filter(d=>d.status==='resolvida');
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openDoubtModal()">+ Nova dúvida</button>
+    </div>
+    <div class="section-title">🔴 Em aberto (${open.length})</div>
+    <div class="card" style="padding:6px 16px;margin-bottom:20px;">
+      ${open.length? open.map(d=>`
+        <div class="list-row" style="cursor:pointer;" onclick="openDoubtModal('${d.id}')">
+          <span style="flex:1;font-size:13px;">${esc(d.question)}</span>
+          ${d.topicId?`<span class="tag-chip">${esc(topicPath(d.topicId))}</span>`:''}
+        </div>`).join('') : emptyRow('Nenhuma dúvida em aberto.')}
+    </div>
+    <div class="section-title">🟢 Resolvidas (${closed.length})</div>
+    <div class="card" style="padding:6px 16px;">
+      ${closed.length? closed.map(d=>`
+        <div class="list-row" style="cursor:pointer;opacity:.7;" onclick="openDoubtModal('${d.id}')">
+          <span style="flex:1;font-size:13px;">${esc(d.question)}</span>
+        </div>`).join('') : emptyRow('Nenhuma dúvida resolvida ainda.')}
+    </div>
+  `;
+}
+function openDoubtModal(id=null){
+  const editing = id? STATE.doubts.find(d=>d.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar dúvida':'Nova dúvida'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Dúvida</label><textarea id="mDoubtQ" rows="2" placeholder="O que você não entendeu?" autofocus>${editing?esc(editing.question):''}</textarea></div>
+    <div class="field"><label>Área / Tópico</label><select id="mDoubtTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+    <div class="field"><label>Explicação (quando resolver)</label><textarea id="mDoubtExp" rows="3">${editing?esc(editing.explanation||''):''}</textarea></div>
+    <div class="field" style="display:flex;align-items:center;gap:10px;">
+      <label style="margin:0;">Resolvida</label>
+      <div class="toggle ${editing&&editing.status==='resolvida'?'on':''}" id="mDoubtToggle" onclick="this.classList.toggle('on')"><div class="knob"></div></div>
+    </div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteDoubt('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveDoubt('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveDoubt(id){
+  const question = document.getElementById('mDoubtQ').value.trim();
+  if(!question){ toast('Escreva a dúvida'); return; }
+  const topicId = document.getElementById('mDoubtTopic').value || null;
+  const explanation = document.getElementById('mDoubtExp').value;
+  const status = document.getElementById('mDoubtToggle').classList.contains('on') ? 'resolvida':'aberta';
+  if(id){
+    Object.assign(STATE.doubts.find(d=>d.id===id), {question,topicId,explanation,status});
+  } else {
+    STATE.doubts.push({id:uid(),question,topicId,explanation,status,createdAt:new Date().toISOString()});
+  }
+  saveState(); closeModal(); render(); toast('Dúvida salva');
+}
+function deleteDoubt(id){
+  const doubt = STATE.doubts.find(x=>x.id===id);
+  if(!doubt) return;
+  showDeleteConfirm({
+    title:'Excluir dúvida?',
+    message:`A dúvida “${String(doubt.question||'Sem título').slice(0,90)}” será excluída.`,
+    detail:'A explicação e o status de resolução também serão removidos.',
+    onConfirm:()=>{ STATE.doubts=STATE.doubts.filter(d=>d.id!==id); saveState(); closeModal(); render(); toast('Dúvida excluída'); }
+  });
+}
+
+/* =====================================================================
+   FLASHCARDS
+===================================================================== */
+let FLASH_INDEX = 0, FLASH_FLIPPED=false, FLASH_TOPIC=null, FLASH_DUE_ONLY=false, FLASH_REVIEWED_SESSION=0;
+function dueFlashcards(list=STATE.flashcards){
+  const today=todayISO();
+  return list.filter(card=>(card.nextReview||today)<=today);
+}
+function currentFlashcardPool(){
+  const base=FLASH_TOPIC?STATE.flashcards.filter(card=>card.topicId===FLASH_TOPIC):STATE.flashcards;
+  return FLASH_DUE_ONLY?dueFlashcards(base):base;
+}
+function flashcardText(text){return esc(String(text||'')).replace(/\r?\n/g,'<br>');}
+function toggleFlashcard(event){
+  if(event&&event.type==='keydown'&&!['Enter',' '].includes(event.key))return;
+  if(event&&event.type==='keydown')event.preventDefault();
+  FLASH_FLIPPED=!FLASH_FLIPPED;
+  render();
+}
+function viewFlashcards(){
+  const basePool=FLASH_TOPIC?STATE.flashcards.filter(f=>f.topicId===FLASH_TOPIC):STATE.flashcards;
+  const due=dueFlashcards(basePool);
+  const pool=FLASH_DUE_ONLY?due:basePool;
+  if(FLASH_INDEX>=pool.length)FLASH_INDEX=0;
+  const current=pool[FLASH_INDEX];
+  const reviewCount=STATE.flashcards.reduce((sum,card)=>sum+(Number.isFinite(Number(card.totalReviews))?Number(card.totalReviews):(Array.isArray(card.reviewHistory)?card.reviewHistory.length:0)),0);
+  return `
+    <div class="flash-study-header">
+      <div><div class="flash-study-eyebrow">APRENDIZAGEM ATIVA</div><h2>Flashcards</h2><p>Recupere o conteúdo da memória e revise no momento certo.</p></div>
+      <button class="btn btn-primary" onclick="openFlashcardModal()">＋ Novo flashcard</button>
+    </div>
+    <div class="flash-study-summary">
+      <div class="flash-summary-stat"><span>Cartões no total</span><strong>${STATE.flashcards.length}</strong></div>
+      <div class="flash-summary-stat due"><span>Para revisar hoje</span><strong>${due.length}</strong></div>
+      <div class="flash-summary-stat"><span>Revisões feitas</span><strong>${reviewCount}</strong></div>
+      <button class="filter-chip ${FLASH_DUE_ONLY?'active':''}" onclick="FLASH_DUE_ONLY=!FLASH_DUE_ONLY;FLASH_INDEX=0;FLASH_FLIPPED=false;render()">${FLASH_DUE_ONLY?'Ver todos os cartões':'▶ Estudar vencidos'} <span>${due.length}</span></button>
+    </div>
+    <div class="filter-bar flash-study-filters">
+      <label class="flash-topic-filter"><span>Área de estudo</span><select onchange="FLASH_TOPIC=this.value||null;FLASH_INDEX=0;FLASH_FLIPPED=false;render()">
+        <option value="">Todas as áreas (${STATE.flashcards.length})</option>
+        ${STATE.topics.map(t=>{const count=STATE.flashcards.filter(f=>f.topicId===t.id).length;return `<option value="${t.id}" ${FLASH_TOPIC===t.id?'selected':''}>${esc(topicPath(t.id))} (${count})</option>`;}).join('')}
+      </select></label>
+      <div class="flash-study-filter-note">${FLASH_DUE_ONLY?'Fila de revisão de hoje':'Modo de estudo livre'}</div>
+    </div>
+    ${!pool.length?`<div class="card flash-empty-state"><div class="empty-state"><div class="ic">${FLASH_DUE_ONLY?'✨':'🧠'}</div><div class="t">${FLASH_DUE_ONLY?'Você está em dia!':'Nenhum flashcard nesta seleção'}</div><div class="d">${FLASH_DUE_ONLY?'Você concluiu os cartões vencidos desta área. Volte amanhã ou estude livremente.':'Crie cartões para praticar a lembrança ativa e fixar os conceitos importantes.'}</div>${FLASH_DUE_ONLY?'<button class="btn btn-primary" style="margin-top:14px;" onclick="FLASH_DUE_ONLY=false;FLASH_INDEX=0;render()">Ver todos os cartões</button>':''}</div></div>`:`
+      <div class="flashcards-study-layout">
+        <section class="flashcard-study-panel">
+          <div class="flashcard-study-topline"><span class="flash-index-label">CARTÃO ${FLASH_INDEX+1} DE ${pool.length}</span><span class="flash-next-review">${current.nextReview&&current.nextReview>todayISO()?'Próxima revisão: '+fmtDateShort(current.nextReview):'Revisão pendente'}</span></div>
+          <div class="flashcard ${FLASH_FLIPPED?'flipped':''}" role="button" tabindex="0" aria-label="Virar flashcard para ${FLASH_FLIPPED?'ver a pergunta':'revelar a resposta'}" onclick="toggleFlashcard(event)" onkeydown="toggleFlashcard(event)">
+            <div class="flashcard-inner">
+              <div class="flashcard-face front"><span class="flashcard-face-label">PERGUNTA</span><div>${flashcardText(current.front)}</div><span class="flashcard-flip-hint">Clique para revelar a resposta ↗</span></div>
+              <div class="flashcard-face back"><span class="flashcard-face-label">RESPOSTA</span><div>${flashcardText(current.back)}</div><span class="flashcard-flip-hint">Resposta revelada · avalie sua lembrança</span></div>
+            </div>
+          </div>
+          ${FLASH_FLIPPED?`<div class="flashcard-rating-panel"><div class="flashcard-rating-title">Como você lembrou?</div><p>Seu feedback define quando este cartão voltará para revisão.</p><div class="flashcard-rating-actions"><button class="rating-again" onclick="gradeFlashcard('${current.id}','again')"><strong>De novo</strong><span>1 dia</span></button><button class="rating-hard" onclick="gradeFlashcard('${current.id}','hard')"><strong>Difícil</strong><span>Intervalo curto</span></button><button class="rating-good" onclick="gradeFlashcard('${current.id}','good')"><strong>Bom</strong><span>Intervalo normal</span></button><button class="rating-easy" onclick="gradeFlashcard('${current.id}','easy')"><strong>Fácil</strong><span>Intervalo maior</span></button></div></div>`:`<div class="flashcard-reveal-callout"><span>✦</span> Tente responder mentalmente antes de revelar.</div>`}
+          <div class="flashcard-study-controls"><button class="btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX-1+${pool.length})%${pool.length};render()" aria-label="Cartão anterior">← Anterior</button><span>${FLASH_INDEX+1} / ${pool.length}</span><button class="btn" onclick="FLASH_FLIPPED=false;FLASH_INDEX=(FLASH_INDEX+1)%${pool.length};render()" aria-label="Próximo cartão">Próximo →</button></div>
+          <div class="flashcard-manage-controls"><button class="btn btn-sm" onclick="openFlashcardModal('${current.id}')">✎ Editar cartão</button><button class="btn btn-sm btn-danger delete-action" onclick="deleteFlashcard('${current.id}')"><span class="trash-icon">🗑</span> Excluir</button></div>
+        </section>
+        <aside class="flashcard-study-side"><div class="flash-side-heading"><div><span>SEU BARALHO</span><h3>Cartões desta área</h3></div><span class="flash-side-count">${pool.length}</span></div><div class="flashcard-deck-list">${pool.map((f,i)=>`<button type="button" class="flashcard-deck-item ${i===FLASH_INDEX?'active':''}" onclick="FLASH_INDEX=${i};FLASH_FLIPPED=false;render()"><span class="flash-deck-number">${String(i+1).padStart(2,'0')}</span><span class="flash-deck-text"><strong>${esc(f.front)}</strong><small>${f.nextReview&&f.nextReview<=todayISO()?'Revisão pendente':'Agendado para '+fmtDateShort(f.nextReview)}</small></span><span class="flash-deck-dot ${f.nextReview&&f.nextReview<=todayISO()?'is-due':''}"></span></button>`).join('')}</div></aside>
+      </div>`}
+  `;
+}
+function gradeFlashcard(id,rating){
+  const card=STATE.flashcards.find(f=>f.id===id);
+  if(!card||!['again','hard','good','easy'].includes(rating))return;
+  const oldInterval=Math.max(0,Math.floor(Number(card.reviewIntervalDays)||0));
+  let repetitions=Math.max(0,Math.floor(Number(card.repetitions)||0));
+  let ease=Math.max(1.3,Math.min(3,Number(card.easeFactor)||2.5));
+  let interval=1;
+  if(rating==='again'){
+    interval=1;repetitions=0;ease=Math.max(1.3,ease-.2);
+  }else if(rating==='hard'){
+    interval=repetitions===0?1:Math.max(1,Math.round(oldInterval*1.2));
+    repetitions+=1;ease=Math.max(1.3,ease-.15);
+  }else if(rating==='good'){
+    interval=repetitions===0?1:(repetitions===1?3:Math.max(1,Math.round(oldInterval*ease)));
+    repetitions+=1;
+  }else{
+    interval=repetitions===0?3:(repetitions===1?5:Math.max(1,Math.round(oldInterval*ease*1.3)));
+    repetitions+=1;ease=Math.min(3,ease+.15);
+  }
+  interval=Math.max(1,Math.min(3650,interval));
+  const next=new Date();next.setHours(12,0,0,0);next.setDate(next.getDate()+interval);
+  const nextReview=localDateISO(next),today=todayISO();
+  card.repetitions=repetitions;card.reviewIntervalDays=interval;card.easeFactor=Number(ease.toFixed(2));card.nextReview=nextReview;
+  card.reviewHistory=Array.isArray(card.reviewHistory)?card.reviewHistory:[];
+  card.totalReviews=Math.max(0,Math.floor(Number(card.totalReviews)||card.reviewHistory.length))+1;
+  card.reviewHistory.push({date:today,rating,intervalDays:interval,nextReview});
+  if(card.reviewHistory.length>200)card.reviewHistory=card.reviewHistory.slice(-200);
+  const base=FLASH_TOPIC?STATE.flashcards.filter(f=>f.topicId===FLASH_TOPIC):STATE.flashcards;
+  const currentIndex=currentFlashcardPool().findIndex(f=>f.id===id);
+  if(FLASH_DUE_ONLY){
+    const remainingDue=dueFlashcards(base);
+    FLASH_INDEX=Math.min(Math.max(0,currentIndex),Math.max(0,remainingDue.length-1));
+  }else{
+    FLASH_INDEX=base.length?(Math.max(0,base.findIndex(f=>f.id===id))+1)%base.length:0;
+  }
+  FLASH_FLIPPED=false;FLASH_REVIEWED_SESSION+=1;
+  saveState();render();
+  toast(`Revisão registrada · próximo intervalo: ${interval} ${interval===1?'dia':'dias'}`);
+}
+function openFlashcardModal(id=null){
+  const editing = id? STATE.flashcards.find(f=>f.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar flashcard':'Novo flashcard'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Frente (pergunta)</label><textarea id="mFlashFront" rows="2" autofocus>${editing?esc(editing.front):''}</textarea></div>
+    <div class="field"><label>Verso (resposta)</label><textarea id="mFlashBack" rows="2">${editing?esc(editing.back):''}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>Área / Tópico</label><select id="mFlashTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+      <div class="field"><label>Dificuldade</label><select id="mFlashDiff">
+        <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
+        <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
+        <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
+      </select></div>
+    </div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteFlashcard('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveFlashcard('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveFlashcard(id){
+  const front = document.getElementById('mFlashFront').value.trim();
+  const back = document.getElementById('mFlashBack').value.trim();
+  if(!front||!back){ toast('Preencha frente e verso'); return; }
+  const topicId = document.getElementById('mFlashTopic').value || null;
+  const difficulty = document.getElementById('mFlashDiff').value;
+  if(id){
+    Object.assign(STATE.flashcards.find(f=>f.id===id), {front,back,topicId,difficulty});
+  } else {
+    STATE.flashcards.push({id:uid(),front,back,topicId,difficulty,nextReview:todayISO(),repetitions:0,totalReviews:0,reviewIntervalDays:0,easeFactor:2.5,reviewHistory:[],createdAt:new Date().toISOString()});
+  }
+  saveState(); clearActiveDraft(); closeModal(); render(); toast('Flashcard salvo');
+}
+function deleteFlashcard(id){
+  const flash = STATE.flashcards.find(x=>x.id===id);
+  if(!flash) return;
+  showDeleteConfirm({
+    title:'Excluir flashcard?',
+    message:`Este flashcard será excluído permanentemente.`,
+    detail:`Frente: “${String(flash.front||'Sem conteúdo').slice(0,90)}”`,
+    onConfirm:()=>{ STATE.flashcards=STATE.flashcards.filter(f=>f.id!==id); FLASH_INDEX=0; saveState(); closeModal(); render(); toast('Flashcard excluído'); }
+  });
+}
+
+/* =====================================================================
+   QUESTÕES
+===================================================================== */
+// Guarda a matéria e dificuldade atualmente selecionadas
+let QUESTIONS_SCREEN = 'subjects';
+let QUESTIONS_TOPIC_ID = null;
+let QUESTIONS_DIFFICULTY = null;
+
+
+/* ---------------------------------------------------------
+   TELA PRINCIPAL DAS QUESTÕES
+   Mostra as matérias disponíveis
+--------------------------------------------------------- */
+function viewQuestoes(){
+
+    // =========================================================
+    // TELA 1 - MATÉRIAS
+    // =========================================================
+    if (QUESTIONS_SCREEN === 'subjects') {
+
+        const subjects = STATE.topics.filter(t => !t.parentId);
+
+        return `
+            <div class="questions-page-header">
+                <div>
+                    <div class="section-title">
+                        Banco de questões
+                    </div>
+
+                    <div class="questions-subtitle">
+                        Escolha uma matéria para começar sua revisão.
+                    </div>
+                </div>
+
+                <button
+                    class="btn btn-primary"
+                    onclick="openQuestionModal()"
+                >
+                    + Nova questão
+                </button>
+            </div>
+
+            ${
+                subjects.length === 0
+
+                ? `
+                    <div class="card">
+                        <div class="empty-state">
+                            <div class="ic">📚</div>
+                            <div class="t">
+                                Nenhuma matéria cadastrada
+                            </div>
+
+                            <div class="d">
+                                Crie uma matéria em Conteúdos para organizar suas questões.
+                            </div>
+                        </div>
+                    </div>
+                `
+
+                :
+
+                `
+                    <div class="questions-subject-list">
+
+                        ${subjects.map(topic => {
+
+                            const topicQuestions =
+                                getQuestionsByTopic(topic.id);
+
+                            const easy =
+                                topicQuestions.filter(q => q.difficulty === 'facil').length;
+
+                            const medium =
+                                topicQuestions.filter(q => q.difficulty === 'medio').length;
+
+                            const hard =
+                                topicQuestions.filter(q => q.difficulty === 'dificil').length;
+
+                            return `
+
+                                <div class="question-subject topic-color-${topic.color || 1}">
+
+                                    <div class="question-subject-info">
+
+                                        <div class="question-subject-name">
+                                            ${esc(topic.name)}
+                                        </div>
+
+                                        <div class="question-difficulty-counts">
+
+                                            <span class="difficulty-count easy">
+                                                <span class="difficulty-dot"></span>
+                                                ${easy}
+                                            </span>
+
+                                            <span class="difficulty-count medium">
+                                                <span class="difficulty-dot"></span>
+                                                ${medium}
+                                            </span>
+
+                                            <span class="difficulty-count hard">
+                                                <span class="difficulty-dot"></span>
+                                                ${hard}
+                                            </span>
+
+                                        </div>
+
+                                    </div>
+
+                                    <button
+                                        class="btn btn-primary question-arrow"
+                                        onclick="openQuestionDifficulties('${topic.id}')"
+                                        title="Ver questões"
+                                    >
+                                        →
+                                    </button>
+
+                                </div>
+
+                            `;
+
+                        }).join('')}
+
+                    </div>
+                `
+            }
+        `;
+    }
+
+
+    // =========================================================
+    // TELA 2 - DIFICULDADES
+    // =========================================================
+
+    if (QUESTIONS_SCREEN === 'difficulties') {
+
+        const topic =
+            STATE.topics.find(t => t.id === QUESTIONS_TOPIC_ID);
+
+        if (!topic) {
+            QUESTIONS_SCREEN = 'subjects';
+            return viewQuestoes();
+        }
+
+        const questions =
+            getQuestionsByTopic(topic.id);
+
+        const easy =
+            questions.filter(q => q.difficulty === 'facil').length;
+
+        const medium =
+            questions.filter(q => q.difficulty === 'medio').length;
+
+        const hard =
+            questions.filter(q => q.difficulty === 'dificil').length;
+
+
+        return `
+
+            <div class="questions-page-header">
+
+                <div>
+
+                    <button
+                        class="btn btn-primary question-back"
+                        onclick="backToQuestionSubjects()"
+                    >
+                        ←
+                    </button>
+
+                    <div class="question-breadcrumb">
+                        ${esc(topic.name)}
+                    </div>
+
+                    <div class="questions-subtitle">
+                        Escolha o nível de dificuldade.
+                    </div>
+
+                </div>
+
+                <button
+                    class="btn btn-primary"
+                    onclick="openQuestionModal()"
+                >
+                    + Nova questão
+                </button>
+
+            </div>
+
+
+            <div class="question-difficulty-list">
+
+                <div class="question-difficulty easy-border">
+
+                    <div>
+
+                        <div class="question-difficulty-title">
+                            Fácil
+                        </div>
+
+                        <div class="question-difficulty-description">
+                            Questões para revisar conceitos básicos.
+                        </div>
+
+                        <div class="question-total">
+                            ${easy} ${easy === 1 ? 'questão' : 'questões'}
+                        </div>
+
+                    </div>
+
+                    <button
+                        class="btn btn-primary question-arrow"
+                        onclick="openQuestionList('${topic.id}', 'facil')"
+                    >
+                        →
+                    </button>
+
+                </div>
+
+
+                <div class="question-difficulty medium-border">
+
+                    <div>
+
+                        <div class="question-difficulty-title">
+                            Médio
+                        </div>
+
+                        <div class="question-difficulty-description">
+                            Questões que exigem maior atenção e raciocínio.
+                        </div>
+
+                        <div class="question-total">
+                            ${medium} ${medium === 1 ? 'questão' : 'questões'}
+                        </div>
+
+                    </div>
+
+                    <button
+                        class="btn btn-primary question-arrow"
+                        onclick="openQuestionList('${topic.id}', 'medio')"
+                    >
+                        →
+                    </button>
+
+                </div>
+
+
+                <div class="question-difficulty hard-border">
+
+                    <div>
+
+                        <div class="question-difficulty-title">
+                            Difícil
+                        </div>
+
+                        <div class="question-difficulty-description">
+                            Questões que exigem maior domínio do conteúdo.
+                        </div>
+
+                        <div class="question-total">
+                            ${hard} ${hard === 1 ? 'questão' : 'questões'}
+                        </div>
+
+                    </div>
+
+                    <button
+                        class="btn btn-primary question-arrow"
+                        onclick="openQuestionList('${topic.id}', 'dificil')"
+                    >
+                        →
+                    </button>
+
+                </div>
+
+            </div>
+        `;
+    }
+
+
+    // =========================================================
+    // TELA 3 - QUESTÕES
+    // =========================================================
+
+    if (QUESTIONS_SCREEN === 'questions') {
+
+        const topic =
+            STATE.topics.find(t => t.id === QUESTIONS_TOPIC_ID);
+
+        const difficulty =
+            QUESTIONS_DIFFICULTY;
+
+        if (!topic) {
+            QUESTIONS_SCREEN = 'subjects';
+            return viewQuestoes();
+        }
+
+        const questions =
+            getQuestionsByTopic(topic.id)
+                .filter(q => q.difficulty === difficulty)
+                .reverse();
+
+
+        const difficultyName =
+            difficulty === 'facil'
+                ? 'Fácil'
+                : difficulty === 'medio'
+                    ? 'Médio'
+                    : 'Difícil';
+
+
+        return `
+
+            <div class="questions-page-header">
+
+                <div>
+
+                    <button
+                        class="btn btn-primary question-back"
+                        onclick="backToQuestionDifficulties()"
+                    >
+                        ←
+                    </button>
+
+                    <div class="question-breadcrumb">
+                        ${esc(topic.name)} · ${difficultyName}
+                    </div>
+
+                    <div class="questions-subtitle">
+                        ${questions.length}
+                        ${questions.length === 1 ? 'questão cadastrada' : 'questões cadastradas'}
+                    </div>
+
+                </div>
+
+                <button
+                    class="btn btn-primary"
+                    onclick="openQuestionModal()"
+                >
+                    + Nova questão
+                </button>
+
+            </div>
+
+
+            ${
+                questions.length === 0
+
+                ? `
+
+                    <div class="card">
+                        <div class="empty-state">
+
+                            <div class="ic">📋</div>
+
+                            <div class="t">
+                                Nenhuma questão encontrada
+                            </div>
+
+                            <div class="d">
+                                Ainda não existem questões com essa dificuldade nesta matéria.
+                            </div>
+
+                        </div>
+                    </div>
+
+                `
+
+                :
+
+                `
+
+                    <div class="questions-list">
+
+                        ${questions.map(q => `
+
+                            <div class="question-card">
+
+                                <div class="question-card-top">
+
+                                    <span class="
+                                        pill
+                                        ${q.difficulty === 'dificil'
+                                            ? 'pill-red'
+                                            : q.difficulty === 'medio'
+                                                ? 'pill-amber'
+                                                : 'pill-teal'}
+                                    ">
+                                        ${difficultyName}
+                                    </span>
+
+                                    ${
+                                        q.tags && q.tags.length
+
+                                        ? `
+                                            <div class="question-tags">
+                                                ${q.tags.map(tag => `
+                                                    <span class="tag-chip">
+                                                        ${esc(tag)}
+                                                    </span>
+                                                `).join('')}
+                                            </div>
+                                        `
+
+                                        : ''
+                                    }
+
+                                </div>
+
+
+                                <div class="question-card-text">
+                                    ${sanitizeNoteHtml(q.questionHtml||`<p>${esc(q.question||'')}</p>`)}
+                                </div>
+
+
+                                ${
+                                    (q.answerHtml||q.answer)
+
+                                    ? `
+                                        <div class="question-answer-preview">
+                                            Resposta cadastrada
+                                        </div>
+                                    `
+
+                                    : ''
+                                }
+
+
+                                ${
+                                    q.topicId
+
+                                    ? `
+                                        <div class="question-card-topic">
+                                            📚 ${esc(topicPath(q.topicId))}
+                                        </div>
+                                    `
+
+                                    : ''
+                                }
+
+
+                                <button
+                                    class="btn btn-primary question-card-arrow"
+                                    onclick="event.stopPropagation(); openQuestionModal('${q.id}')"
+                                    title="Abrir questão"
+                                >
+                                    →
+                                </button>
+
+                            </div>
+
+                        `).join('')}
+
+                    </div>
+
+                `
+            }
+
+        `;
+    }
+}
+
+function getQuestionsByTopic(topicId) {
+
+    const topicIds = [topicId];
+
+    function addChildren(parentId) {
+
+        const children =
+            STATE.topics.filter(t => t.parentId === parentId);
+
+        children.forEach(child => {
+
+            topicIds.push(child.id);
+
+            addChildren(child.id);
+
+        });
+    }
+
+    addChildren(topicId);
+
+    return STATE.questions.filter(q =>
+        q.topicId && topicIds.includes(q.topicId)
+    );
+}
+
+
+function openQuestionDifficulties(topicId) {
+
+    QUESTIONS_TOPIC_ID = topicId;
+    QUESTIONS_DIFFICULTY = null;
+    QUESTIONS_SCREEN = 'difficulties';
+
+    render();
+}
+
+
+function openQuestionList(topicId, difficulty) {
+
+    QUESTIONS_TOPIC_ID = topicId;
+    QUESTIONS_DIFFICULTY = difficulty;
+    QUESTIONS_SCREEN = 'questions';
+
+    render();
+}
+
+
+function backToQuestionSubjects() {
+
+    QUESTIONS_SCREEN = 'subjects';
+    QUESTIONS_TOPIC_ID = null;
+    QUESTIONS_DIFFICULTY = null;
+
+    render();
+}
+
+
+function backToQuestionDifficulties() {
+
+    QUESTIONS_SCREEN = 'difficulties';
+    QUESTIONS_DIFFICULTY = null;
+
+    render();
+}
+
+/*CODIGO ORIGINAL DAS QUESTIONS*/
+/*function viewQuestoes(){
+  const qs = STATE.questions.slice().reverse();
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openQuestionModal()">+ Nova questão</button>
+    </div>
+    ${qs.length===0? `<div class="card"><div class="empty-state"><div class="ic">📋</div><div class="t">Nenhuma questão cadastrada</div><div class="d">Monte seu próprio banco de questões para revisar depois.</div></div></div>` : `
+    <div class="card" style="padding:6px 16px;">
+      ${qs.map(q=>`
+        <div class="list-row" style="align-items:flex-start;cursor:pointer; border:0.5px solid lightgray; border-radius:10px;" onclick="openQuestionModal('${q.id}')">
+          <span class="pill ${q.difficulty==='dificil'?'pill-red':q.difficulty==='medio'?'pill-amber':'pill-teal'}">${q.difficulty==='dificil'?'difícil':q.difficulty==='medio'?'médio':'fácil'}</span>
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:500;">${esc(q.question)}</div>
+            ${q.topicId?`<div style="font-size:11px;color:var(--text-faint);margin-top:2px;">${esc(topicPath(q.topicId))}</div>`:''}
+          </div>
+        </div>`).join('')}
+    </div>`}
+  `;
+  }*/
+
+
+let QUESTION_EDITOR_RANGES = {};
+let QUESTION_EDITOR_ACTIVE = null;
+
+function questionEditorValue(question, key){
+  const htmlKey = key==='question'?'questionHtml':'answerHtml';
+  const legacyKey = key==='question'?'question':'answer';
+  const value = String(question?.[htmlKey]||'').trim();
+  return value || (question?.[legacyKey] ? `<p>${esc(question[legacyKey])}</p>` : '');
+}
+function questionEditorRemember(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const sel=window.getSelection();
+  if(!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) return;
+  QUESTION_EDITOR_RANGES[id]=sel.getRangeAt(0).cloneRange();
+  QUESTION_EDITOR_ACTIVE=id;
+}
+function questionEditorRestore(id){
+  const el=document.getElementById(id);
+  if(!el) return false;
+  const sel=window.getSelection();
+  sel.removeAllRanges();
+  const saved=QUESTION_EDITOR_RANGES[id];
+  if(saved){
+    try{sel.addRange(saved);el.focus();return true;}catch{}
+  }
+  el.focus();
+  const range=document.createRange();
+  range.selectNodeContents(el);range.collapse(false);
+  sel.removeAllRanges();sel.addRange(range);
+  QUESTION_EDITOR_RANGES[id]=range.cloneRange();
+  return true;
+}
+function questionEditorExec(id,cmd,value=null){
+  questionEditorRestore(id);
+  try{document.execCommand(cmd,false,value);}catch{}
+  questionEditorRemember(id);
+}
+function questionEditorInsertHtml(id,html){
+  if(!questionEditorRestore(id)) return;
+  let inserted=false;
+  try{inserted=document.execCommand('insertHTML',false,html);}catch{}
+  if(!inserted){
+    const sel=window.getSelection();
+    if(sel.rangeCount){
+      const range=sel.getRangeAt(0);
+      range.deleteContents();
+      const wrap=document.createElement('div');wrap.innerHTML=html;
+      const frag=document.createDocumentFragment();
+      while(wrap.firstChild)frag.appendChild(wrap.firstChild);
+      range.insertNode(frag);range.collapse(false);sel.removeAllRanges();sel.addRange(range);
+    }
+  }
+  questionEditorRemember(id);
+}
+function questionEditorLink(id){
+  questionEditorRestore(id);
+  const url=prompt('URL do link:');
+  if(url) questionEditorExec(id,'createLink',url.trim());
+}
+function questionEditorImageUrl(id){
+  questionEditorRestore(id);
+  const url=prompt('URL da imagem:');
+  if(!url) return;
+  questionEditorInsertHtml(id,`<img src="${esc(url.trim())}" alt="Imagem da questão">`);
+}
+function questionEditorTriggerImage(id){
+  QUESTION_EDITOR_ACTIVE=id;
+  questionEditorRemember(id);
+  const input=document.getElementById(id+'ImageInput');
+  if(input) input.click();
+}
+function questionEditorHandleImageInput(id,input){
+  const files=[...(input?.files||[])];
+  if(input) input.value='';
+  if(!files.length) return;
+  questionEditorHandleImages(id,files);
+}
+function questionEditorHandleImages(id,files){
+  files.filter(f=>/^image\//i.test(f.type)).slice(0,5).forEach(file=>{
+    questionEditorCompressImage(file).then(dataUrl=>{
+      if(dataUrl) questionEditorInsertHtml(id,`<img src="${dataUrl}" alt="Imagem inserida">`);
+    }).catch(()=>toast('Não foi possível inserir uma das imagens.'));
+  });
+}
+function questionEditorCompressImage(file){
+  return new Promise((resolve,reject)=>{
+    if(!file || !/^image\//i.test(file.type)) return reject(new Error('Formato inválido'));
+    if(file.size>12*1024*1024) return reject(new Error('Imagem muito grande'));
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('Leitura falhou'));
+    reader.onload=()=>{
+      const src=String(reader.result||'');
+      const img=new Image();
+      img.onload=()=>{
+        const maxW=1400,maxH=1400;
+        const scale=Math.min(1,maxW/img.width,maxH/img.height);
+        const w=Math.max(1,Math.round(img.width*scale));
+        const h=Math.max(1,Math.round(img.height*scale));
+        const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');
+        if(!ctx) return resolve(src.length<=1400000?src:'');
+        ctx.drawImage(img,0,0,w,h);
+        let out=canvas.toDataURL('image/webp',0.82);
+        if(!out.startsWith('data:image/webp')) out=canvas.toDataURL('image/jpeg',0.82);
+        if(out.length>1400000) out=canvas.toDataURL('image/jpeg',0.72);
+        if(out.length>1400000){toast('A imagem ainda ficou muito grande. Tente uma imagem menor.');return resolve('');}
+        resolve(out);
+      };
+      img.onerror=()=>reject(new Error('Imagem inválida'));
+      img.src=src;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function questionEditorPaste(event,id){
+  const items=[...(event.clipboardData?.items||[])];
+  const imageItem=items.find(item=>item.type && item.type.startsWith('image/'));
+  if(!imageItem) return;
+  event.preventDefault();
+  questionEditorRemember(id);
+  const file=imageItem.getAsFile();
+  if(file) questionEditorHandleImages(id,[file]);
+}
+function questionEditorDrop(event,id){
+  event.preventDefault();
+  const files=[...(event.dataTransfer?.files||[])].filter(f=>f.type.startsWith('image/'));
+  if(!files.length) return;
+  questionEditorRemember(id);
+  questionEditorHandleImages(id,files);
+  document.getElementById(id)?.classList.remove('drag-over');
+}
+function questionEditorDragOver(event,id){
+  event.preventDefault();
+  QUESTION_EDITOR_ACTIVE=id;
+  document.getElementById(id)?.classList.add('drag-over');
+}
+function questionEditorDragLeave(id){document.getElementById(id)?.classList.remove('drag-over');}
+
+function questionEditorToolbar(id){
+  const btn=(label,title,action,icon=label)=>`<button type="button" title="${title}" aria-label="${title}" onmousedown="event.preventDefault()" onclick="${action}">${icon}</button>`;
+  return `<div class="editor-toolbar question-editor-toolbar">
+    ${btn('H2','Título da questão',`questionEditorExec('${id}','formatBlock','H2')`)}
+    ${btn('H3','Subtítulo',`questionEditorExec('${id}','formatBlock','H3')`)}
+    <div class="sep"></div>
+    ${btn('B','Negrito',`questionEditorExec('${id}','bold')`,'<b>B</b>')}
+    ${btn('I','Itálico',`questionEditorExec('${id}','italic')`,'<i>I</i>')}
+    ${btn('U','Sublinhado',`questionEditorExec('${id}','underline')`,'<u>U</u>')}
+    ${btn('S','Tachado',`questionEditorExec('${id}','strikeThrough')`,'<s>S</s>')}
+    <div class="sep"></div>
+    ${btn('•≡','Lista com marcadores',`questionEditorExec('${id}','insertUnorderedList')`)}
+    ${btn('1≡','Lista numerada',`questionEditorExec('${id}','insertOrderedList')`)}
+    ${btn('❝','Citação',`questionEditorExec('${id}','formatBlock','BLOCKQUOTE')`)}
+    ${btn('&lt;/&gt;','Código',`questionEditorExec('${id}','formatBlock','PRE')`)}
+    <div class="sep"></div>
+    ${btn('A₊','Sobrescrito',`questionEditorExec('${id}','superscript')`)}
+    ${btn('A₋','Subscrito',`questionEditorExec('${id}','subscript')`)}
+    ${btn('L','Alinhar à esquerda',`questionEditorExec('${id}','justifyLeft')`)}
+    ${btn('C','Centralizar',`questionEditorExec('${id}','justifyCenter')`)}
+    ${btn('R','Alinhar à direita',`questionEditorExec('${id}','justifyRight')`)}
+    <div class="sep"></div>
+    ${btn('🔗','Inserir link',`questionEditorLink('${id}')`)}
+    ${btn('🖼️','Inserir imagem ou tirar foto',`questionEditorTriggerImage('${id}')`)}
+    ${btn('🌐','Inserir imagem por URL',`questionEditorImageUrl('${id}')`)}
+    ${btn('―','Separador',`questionEditorExec('${id}','insertHorizontalRule')`)}
+    <div class="sep"></div>
+    ${btn('⨯','Limpar formatação',`questionEditorExec('${id}','removeFormat')`)}
+  </div>`;
+}
+function questionRichEditor(id,value,placeholder){
+  return `<div class="question-editor-wrap">
+    ${questionEditorToolbar(id)}
+    <input id="${id}ImageInput" class="question-editor-image-input" type="file" accept="image/*" capture="environment" multiple onchange="questionEditorHandleImageInput('${id}',this)">
+    <div class="editor-body question-editor-body" id="${id}" contenteditable="true" spellcheck="true" data-placeholder="${placeholder}" onfocus="questionEditorRemember('${id}')" onmouseup="questionEditorRemember('${id}')" onkeyup="questionEditorRemember('${id}')" oninput="questionEditorRemember('${id}')" onpaste="questionEditorPaste(event,'${id}')" ondragover="questionEditorDragOver(event,'${id}')" ondragleave="questionEditorDragLeave('${id}')" ondrop="questionEditorDrop(event,'${id}')">${value||''}</div>
+  </div>`;
+}
+
+function openQuestionModal(id=null){
+  const editing=id?STATE.questions.find(q=>q.id===id):null;
+  QUESTION_EDITOR_RANGES={};QUESTION_EDITOR_ACTIVE=null;
+  showModal(`
+    <div class="question-modal-head">
+      <div>
+        <div class="question-modal-kicker">${editing?'EDITAR QUESTÃO':'NOVA QUESTÃO'}</div>
+        <h2>${editing?'Editar questão':'Criar questão'}</h2>
+        <p>Monte o enunciado e o gabarito com texto formatado, imagens e links.</p>
+      </div>
+      <button class="icon-btn question-modal-close" onclick="closeModal()" aria-label="Fechar">✕</button>
+    </div>
+
+    <section class="question-form-section question-content-section">
+      <div class="question-section-head">
+        <div>
+          <span class="question-section-icon">❓</span>
+          <div>
+            <h3>Questão</h3>
+            <p>Enunciado, alternativas, imagens ou informações de apoio.</p>
+          </div>
+        </div>
+        <span class="question-section-tag">Enunciado</span>
+      </div>
+      ${questionRichEditor('mQQuestionEditor',questionEditorValue(editing,'question'),'Digite o enunciado da questão...')}
+    </section>
+
+    <section class="question-form-section question-content-section">
+      <div class="question-section-head">
+        <div>
+          <span class="question-section-icon answer">✓</span>
+          <div>
+            <h3>Resposta / Gabarito</h3>
+            <p>Explique a resposta com o nível de detalhe necessário para sua revisão.</p>
+          </div>
+        </div>
+        <span class="question-section-tag answer">Gabarito</span>
+      </div>
+      ${questionRichEditor('mQAnswerEditor',questionEditorValue(editing,'answer'),'Digite a resposta, explicação ou gabarito...')}
+    </section>
+
+    <section class="question-form-section question-meta-section">
+      <div class="question-section-head compact">
+        <div>
+          <span class="question-section-icon meta">⚙</span>
+          <div>
+            <h3>Classificação</h3>
+            <p>Organize a questão para encontrar e revisar depois.</p>
+          </div>
+        </div>
+      </div>
+      <div class="question-meta-grid">
+        <div class="field question-meta-field">
+          <label>Área / Tópico</label>
+          <select id="mQTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select>
+        </div>
+        <div class="field question-meta-field">
+          <label>Dificuldade</label>
+          <select id="mQDiff">
+            <option value="facil" ${!editing||editing.difficulty==='facil'?'selected':''}>🟢 Fácil</option>
+            <option value="medio" ${editing&&editing.difficulty==='medio'?'selected':''}>🟡 Médio</option>
+            <option value="dificil" ${editing&&editing.difficulty==='dificil'?'selected':''}>🔴 Difícil</option>
+          </select>
+        </div>
+      </div>
+      <div class="field question-tags-field">
+        <label>Tags</label>
+        <input id="mQTags" value="${editing?esc((editing.tags||[]).join(', ')):''}" placeholder="Ex.: fisiologia, anatomia, prova 1">
+      </div>
+    </section>
+
+    <div class="modal-actions question-modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteQuestion('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveQuestion('${id||''}')">Salvar questão</button>
+    </div>
+  `, true, 'question-modal');
+}
+function saveQuestion(id){
+  const questionHtml=sanitizeNoteHtml(document.getElementById('mQQuestionEditor').innerHTML);
+  const answerHtml=sanitizeNoteHtml(document.getElementById('mQAnswerEditor').innerHTML);
+  const question=stripHtml(questionHtml).replace(/\s+/g,' ').trim();
+  const answer=stripHtml(answerHtml).replace(/\s+/g,' ').trim();
+  if(!question && !questionHtml.includes('<img')){toast('Escreva a questão ou insira uma imagem');return;}
+  const topicId=document.getElementById('mQTopic').value||null;
+  const difficulty=document.getElementById('mQDiff').value;
+  const tags=document.getElementById('mQTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  if(id){
+    const item=STATE.questions.find(q=>q.id===id); if(!item)return;
+    Object.assign(item,{question,answer,questionHtml,answerHtml,topicId,difficulty,tags});
+  } else {
+    STATE.questions.push({id:uid(),question,answer,questionHtml,answerHtml,topicId,difficulty,tags,status:'ativa',createdAt:new Date().toISOString()});
+  }
+  saveState();clearActiveDraft(); closeModal();render();toast('Questão salva');
+}
+function deleteQuestion(id){
+  const question = STATE.questions.find(x=>x.id===id);
+  if(!question) return;
+  showDeleteConfirm({
+    title:'Excluir questão?',
+    message:'Esta questão será removida da sua base de estudos.',
+    detail:`Pergunta: “${String(question.question||'Sem conteúdo').slice(0,100)}”`,
+    onConfirm:()=>{ STATE.questions=STATE.questions.filter(q=>q.id!==id); saveState(); closeModal(); render(); toast('Questão excluída'); }
+  });
+}
+
+/* =====================================================================
+   EVENTOS / PROVAS
+===================================================================== */
+function viewEventos(){
+  const evs = STATE.events.slice().sort((a,b)=>a.date.localeCompare(b.date));
+  return `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn btn-primary" onclick="openEventModal()">+ Novo evento</button>
+    </div>
+    ${evs.length===0? `<div class="card"><div class="empty-state"><div class="ic">🔔</div><div class="t">Nenhum evento cadastrado</div><div class="d">Provas, entregas, apresentações — registre aqui para ver a contagem regressiva.</div></div></div>` : `
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+      ${evs.map(e=>{
+        const days = daysBetween(e.date,todayISO());
+        const past = days<0;
+        return `<div class="card" style="cursor:pointer;${past?'opacity:.55;':''}" onclick="openEventModal('${e.id}')">
+          <div style="font-size:11px;color:var(--text-faint);text-transform:capitalize;">${e.type||'evento'}</div>
+          <div style="font-weight:600;font-size:14.5px;margin:4px 0;">${esc(e.title)}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">${fmtDate(e.date)}</div>
+          <span class="pill ${past?'pill-muted':days<=3?'pill-red':'pill-amber'}">${past?'já passou':days===0?'é hoje':'faltam '+days+' dias'}</span>
+        </div>`;
+      }).join('')}
+    </div>`}
+  `;
+}
+function openEventModal(id=null){
+  const editing = id? STATE.events.find(e=>e.id===id): null;
+  showModal(`
+    <div class="modal-head"><h2>${editing?'Editar evento':'Novo evento'}</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="field"><label>Título</label><input id="mEvTitle" value="${editing?esc(editing.title):''}" placeholder="Ex: Prova de Matemática" autofocus></div>
+    <div class="field-row">
+      <div class="field"><label>Data</label><input type="date" id="mEvDate" value="${editing?editing.date:''}"></div>
+      <div class="field"><label>Tipo</label><select id="mEvType">
+        <option value="prova" ${!editing||editing.type==='prova'?'selected':''}>Prova</option>
+        <option value="trabalho" ${editing&&editing.type==='trabalho'?'selected':''}>Trabalho</option>
+        <option value="apresentacao" ${editing&&editing.type==='apresentacao'?'selected':''}>Apresentação</option>
+        <option value="prazo" ${editing&&editing.type==='prazo'?'selected':''}>Prazo</option>
+        <option value="outro" ${editing&&editing.type==='outro'?'selected':''}>Outro</option>
+      </select></div>
+    </div>
+    <div class="field"><label>Área relacionada</label><select id="mEvTopic"><option value="">— Nenhuma —</option>${STATE.topics.map(t=>`<option value="${t.id}" ${editing&&editing.topicId===t.id?'selected':''}>${esc(topicPath(t.id))}</option>`).join('')}</select></div>
+    <div class="modal-actions">
+      ${editing?`<button class="btn btn-danger delete-action" style="margin-right:auto;" onclick="deleteEvent('${id}')"><span class="trash-icon">🗑</span> Excluir</button>`:''}
+      <button class="btn" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveEvent('${id||''}')">Salvar</button>
+    </div>
+  `);
+}
+function saveEvent(id){
+  const title = document.getElementById('mEvTitle').value.trim();
+  const date = document.getElementById('mEvDate').value;
+  if(!title||!date||!isValidDateOnly(date)){ toast('Preencha um título e uma data válida'); return; }
+  const type = document.getElementById('mEvType').value;
+  const topicId = document.getElementById('mEvTopic').value || null;
+  if(id){
+    Object.assign(STATE.events.find(e=>e.id===id), {title,date,type,topicId});
+  } else {
+    STATE.events.push({id:uid(),title,date,type,topicId});
+  }
+  saveState(); closeModal(); render(); toast('Evento salvo');
+}
+function deleteEvent(id){
+  const event = STATE.events.find(x=>x.id===id);
+  if(!event) return;
+  showDeleteConfirm({
+    title:'Excluir evento?',
+    message:`O evento “${event.title||'Sem título'}” será excluído.`,
+    detail:'Essa alteração também será refletida no calendário e nos próximos eventos.',
+    onConfirm:()=>{ STATE.events=STATE.events.filter(e=>e.id!==id); saveState(); closeModal(); render(); toast('Evento excluído'); }
+  });
+}
+
+/* =====================================================================
+   ESTATÍSTICAS
+===================================================================== */
+function viewEstatisticas(){
+  const streak = computeStreak();
+  const totalMin = totalStudyMinutes();
+  const daysStudied = Object.keys(activityByDay()).length;
+  const byArea = {};
+  STATE.sessions.forEach(s=>{
+    const root = s.topicId ? rootTopicOf(s.topicId) : null;
+    const key = root? root.name : 'Sem área';
+    byArea[key] = (byArea[key]||0) + (s.duration||0);
+  });
+  const totalAreaMin = Object.values(byArea).reduce((a,b)=>a+b,0) || 1;
+  const sortedAreas = Object.entries(byArea).sort((a,b)=>b[1]-a[1]);
+
+  return `
+    <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat-card"><div class="num">${minutesToHM(totalMin)}</div><div class="lbl">tempo total estudado</div></div>
+      <div class="stat-card"><div class="num">${daysStudied}</div><div class="lbl">dias com atividade</div></div>
+      <div class="stat-card"><div class="num">${streak.best}</div><div class="lbl">maior sequência</div></div>
+      <div class="stat-card"><div class="num">${STATE.goals.filter(g=>g.status==='concluida').length}</div><div class="lbl">metas concluídas</div></div>
+    </div>
+    <div class="stat-row" style="grid-template-columns:repeat(4,1fr);">
+      <div class="stat-card"><div class="num">${STATE.notes.length}</div><div class="lbl">anotações criadas</div></div>
+      <div class="stat-card"><div class="num">${STATE.notes.reduce((total,n)=>total+(Array.isArray(n.reviewHistory)?n.reviewHistory.length:0),0)+STATE.flashcards.reduce((total,f)=>total+(Number.isFinite(Number(f.totalReviews))?Number(f.totalReviews):(Array.isArray(f.reviewHistory)?f.reviewHistory.length:0)),0)}</div><div class="lbl">revisões registradas</div></div>
+      <div class="stat-card"><div class="num">${STATE.flashcards.length}</div><div class="lbl">flashcards</div></div>
+      <div class="stat-card"><div class="num">${STATE.doubts.filter(d=>d.status==='resolvida').length}/${STATE.doubts.length}</div><div class="lbl">dúvidas resolvidas</div></div>
+    </div>
+
+    <div class="section-title">Distribuição do tempo por área</div>
+    <div class="card">
+      ${sortedAreas.length? sortedAreas.map(([name,min])=>{
+        const pct = Math.round(min/totalAreaMin*100);
+        return `<div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;"><span>${esc(name)}</span><span style="color:var(--text-faint);">${pct}% · ${minutesToHM(min)}</span></div>
+          <div class="progress-bar"><div style="width:${pct}%"></div></div>
+        </div>`;
+      }).join('') : `<div class="empty-state" style="padding:20px;">Registre sessões de estudo para ver a distribuição.</div>`}
+    </div>
+
+    <div class="section-title" style="margin-top:20px;">Progresso por tópico raiz</div>
+    <div class="card">
+      ${STATE.topics.filter(t=>!t.parentId).length? STATE.topics.filter(t=>!t.parentId).map(t=>`
+        <div style="margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;"><span>${esc(t.name)}</span><span style="color:var(--text-faint);">${t.progress||0}%</span></div>
+          <div class="progress-bar"><div style="width:${t.progress||0}%"></div></div>
+        </div>`).join('') : `<div class="empty-state" style="padding:20px;">Nenhuma área criada ainda.</div>`}
+    </div>
+  `;
+}
+function rootTopicOf(id){
+  let cur = STATE.topics.find(t=>t.id===id);
+  while(cur && cur.parentId){ cur = STATE.topics.find(t=>t.id===cur.parentId); }
+  return cur;
+}
+
+/* =====================================================================
+   FAVORITOS
+===================================================================== */
+function viewFavoritos(){
+  const favNotes = STATE.notes.filter(n=>n.favorite);
+  return `
+    ${favNotes.length===0? `<div class="card"><div class="empty-state"><div class="ic">⭐</div><div class="t">Nenhum favorito ainda</div><div class="d">Marque anotações importantes com a estrela para encontrá-las rapidamente aqui.</div></div></div>` :
+    `<div class="notes-grid">${favNotes.map(renderNoteCard).join('')}</div>`}
+  `;
+}
+
+/* =====================================================================
+   HISTÓRICO
+===================================================================== */
+let HIST_RANGE = 'semana';
+function viewHistorico(){
+  const items = recentActivity(500);
+  const now = new Date();
+  let cutoff = new Date(0);
+  if(HIST_RANGE==='dia'){ cutoff = new Date(); cutoff.setHours(0,0,0,0); }
+  if(HIST_RANGE==='semana'){ cutoff = new Date(); cutoff.setDate(cutoff.getDate()-7); }
+  if(HIST_RANGE==='mes'){ cutoff = new Date(); cutoff.setMonth(cutoff.getMonth()-1); }
+  if(HIST_RANGE==='ano'){ cutoff = new Date(); cutoff.setFullYear(cutoff.getFullYear()-1); }
+  const filtered = items.filter(i=>{const d=parseDateSafe(i.date);return d&&d>=cutoff;});
+  const groups = {};
+  filtered.forEach(i=>{ const k=(i.date||'').slice(0,10); (groups[k]=groups[k]||[]).push(i); });
+  const days = Object.keys(groups).sort().reverse();
+
+  return `
+    <div class="filter-bar">
+      ${['dia','semana','mes','ano'].map(r=>`<span class="filter-chip ${HIST_RANGE===r?'active':''}" onclick="HIST_RANGE='${r}';render()">${r==='dia'?'Hoje':r==='semana'?'Última semana':r==='mes'?'Último mês':'Último ano'}</span>`).join('')}
+    </div>
+    ${days.length===0? `<div class="card"><div class="empty-state">Nenhuma atividade neste período.</div></div>` :
+      days.map(d=>`
+        <div class="section-title" style="margin-top:16px;">${fmtDate(d)}</div>
+        <div class="card" style="padding:6px 16px;">${groups[d].map(renderActivityRow).join('')}</div>
+      `).join('')}
+  `;
+}
+
+/* =====================================================================
+   CONFIGURAÇÕES
+===================================================================== */
+function viewConfig(){
+  const s=STATE.settings, p=s.pomodoro;
+  return `
+    <div class="card" style="margin-bottom:16px;max-width:900px;">
+      <div class="section-title">Timers de estudo <span class="see-all">crie, edite ou remova seus presets</span></div>
+      <div class="timer-manager-list">
+        ${p.presets.map(x=>`<div class="timer-manager-row"><div><strong>${esc(x.name)}</strong><span>${x.work} min foco · ${x.brk} min pausa</span></div><div style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="selectTimerPreset('${x.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir timer" aria-label="Excluir timer" onclick="deleteTimerPreset('${x.id}')">🗑</button></div></div>`).join('')}
+      </div>
+      <div class="timer-add-box">
+        <div class="field-row">
+          <div class="field"><label>Nome do timer</label><input id="timerPresetName" placeholder="Ex: Revisão rápida"></div>
+          <div class="field"><label>Foco (min)</label><input type="number" id="timerPresetWork" min="1" max="180" value="25"></div>
+          <div class="field"><label>Pausa (min)</label><input type="number" id="timerPresetBreak" min="0" max="180" step="1" value="5"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="addTimerPresetFromForm()">+ Adicionar timer</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;max-width:900px;">
+      <div class="section-title">Ciclos personalizados <span class="see-all">combine blocos diferentes e repita automaticamente</span></div>
+      ${p.cycles.length?p.cycles.map(c=>`<div class="cycle-manager-row"><div><strong>🔁 ${esc(c.name)}</strong><span>${c.repeats} repetição(ões) · ${c.steps.map(st=>st.work+'/'+st.brk).join(' → ')}</span></div><div style="display:flex;gap:6px;flex-wrap:wrap;"><button class="btn btn-sm" onclick="editTimerCycle('${c.id}')">✎ Editar</button><button class="btn btn-sm" onclick="selectTimerCycle('${c.id}');navigate('sessoes')">▶ Usar</button><button class="icon-btn btn-trash" title="Excluir ciclo" aria-label="Excluir ciclo" onclick="deleteTimerCycle('${c.id}')">🗑</button></div></div>`).join(''):`<div class="empty-state" style="padding:20px;">Nenhum ciclo personalizado criado.</div>`}
+      <div class="timer-cycle-builder">
+        <div class="field-row">
+          <div class="field"><label>Nome do ciclo</label><input id="cycleName" value="Ciclo personalizado" maxlength="60"></div>
+          <div class="field" style="max-width:180px;"><label>Repetir ciclo</label><input type="number" id="cycleRepeats" value="4" min="1" max="20"></div>
+        </div>
+        <div class="cycle-builder-head"><strong>Etapas</strong><button class="btn btn-sm" onclick="addCycleBuilderStep()">+ Adicionar etapa</button></div>
+        <div id="cycleBuilderSteps">
+          <div class="cycle-step-row"><span class="cycle-step-number">1</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="60" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center;"><button id="cycleSaveBtn" class="btn btn-primary btn-sm" onclick="saveCycleFromBuilder()">Salvar ciclo</button><button id="cycleEditCancelBtn" class="btn btn-sm" style="display:none;" onclick="cancelCycleEdit()">Cancelar edição</button></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;max-width:560px;">
+      <div class="section-title">Pomodoro padrão</div>
+      <div class="field-row">
+        <div class="field"><label>Foco (min)</label><input type="number" id="cfgWork" value="${s.pomodoro.work}"></div>
+        <div class="field"><label>Pausa (min)</label><input type="number" id="cfgBrk" value="${s.pomodoro.brk}"></div>
+      </div>
+      <button class="btn btn-sm" onclick="savePomodoro()">Salvar</button>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;max-width:560px;">
+      <div class="section-title">Intervalos de revisão espaçada (dias)</div>
+      <div class="field"><input id="cfgIntervals" value="${s.reviewIntervals.join(', ')}"></div>
+      <button class="btn btn-sm" onclick="saveIntervals()">Salvar</button>
+    </div>
+
+    <div class="card" style="max-width:560px;">
+      <div class="section-title">Dados</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn" onclick="exportJSON()">⬇ Exportar backup (JSON)</button>
+        <label class="btn" style="cursor:pointer;">⬆ Importar backup<input type="file" accept=".json" style="display:none;" onchange="importJSON(this.files[0])"></label>
+        <button class="btn btn-danger" onclick="resetAll()">Apagar todos os dados</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-faint);margin-top:10px;">Seus dados ficam salvos automaticamente. Exporte periodicamente para ter uma cópia de segurança.</div>
+    </div>
+  `;
+}
+function addTimerPresetDirect(name,work,brk){
+  const p=STATE.settings.pomodoro;
+  if(p.presets.length>=30){toast('Você atingiu o limite de 30 timers personalizados.');return;}
+  const cleanName=String(name||'').trim().slice(0,50),focus=Number(work),pause=Number(brk);
+  if(!cleanName||!Number.isInteger(focus)||focus<1||focus>180||!Number.isInteger(pause)||pause<0||pause>180){toast('Confira o nome e a duração do timer.');return;}
+  p.presets.push({id:uid(),name:cleanName,work:focus,brk:pause});
+  saveState();render();toast('Timer adicionado');
+}
+function addTimerPresetFromForm(){
+  const name=document.getElementById('timerPresetName').value.trim();
+  const workRaw=document.getElementById('timerPresetWork').value.trim();
+  const breakRaw=document.getElementById('timerPresetBreak').value.trim();
+  const work=Number(workRaw),brk=Number(breakRaw);
+  if(!name){toast('Informe o nome do timer.');document.getElementById('timerPresetName').focus();return;}
+  if(!workRaw||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos.');document.getElementById('timerPresetWork').focus();return;}
+  if(!breakRaw||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos.');document.getElementById('timerPresetBreak').focus();return;}
+  addTimerPresetDirect(name,work,brk);
+}
+function deleteTimerPreset(id){
+  const p=STATE.settings.pomodoro;
+  const item=p.presets.find(x=>x.id===id);
+  if(!item) return;
+  if(p.presets.length<=1){toast('Mantenha pelo menos um timer');return;}
+  showDeleteConfirm({
+    title:'Excluir timer?',
+    message:`O timer “${item.name}” será excluído.`,
+    detail:`${item.work} min de foco · ${item.brk} min de pausa.`,
+    onConfirm:()=>{
+      p.presets=p.presets.filter(x=>x.id!==id);
+      if(TIMER.presetId===id){const next=p.presets[0];TIMER.presetId=next.id;TIMER.planType='preset';resetTimer();}
+      saveState();render();toast('Timer excluído');
+    }
+  });
+}
+function editTimerCycle(id){
+  const cycle=STATE.settings.pomodoro.cycles.find(c=>c.id===id);
+  if(!cycle)return;
+  const nameInput=document.getElementById('cycleName');
+  const repeatsInput=document.getElementById('cycleRepeats');
+  const wrap=document.getElementById('cycleBuilderSteps');
+  if(!nameInput||!repeatsInput||!wrap)return;
+  CYCLE_EDITING_ID=id;
+  nameInput.value=cycle.name;
+  repeatsInput.value=cycle.repeats;
+  wrap.innerHTML=cycle.steps.map((step,i)=>`<div class="cycle-step-row"><span class="cycle-step-number">${i+1}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="${step.work}" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="${step.brk}" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button></div>`).join('');
+  const saveBtn=document.getElementById('cycleSaveBtn');
+  if(saveBtn)saveBtn.textContent='Salvar alterações';
+  const cancelBtn=document.getElementById('cycleEditCancelBtn');
+  if(cancelBtn)cancelBtn.style.display='inline-flex';
+  wrap.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function cancelCycleEdit(){
+  CYCLE_EDITING_ID=null;
+  render();
+  toast('Edição cancelada');
+}
+function addCycleBuilderStep(){
+  const wrap=document.getElementById('cycleBuilderSteps'); if(!wrap)return; const n=wrap.children.length+1; const row=document.createElement('div'); row.className='cycle-step-row'; row.innerHTML=`<span class="cycle-step-number">${n}</span><input type="number" class="cycle-work" min="1" max="180" step="1" value="30" placeholder="Foco"><span>min</span><span class="cycle-arrow">→</span><input type="number" class="cycle-break" min="0" max="180" step="1" value="10" placeholder="Pausa"><span>min</span><button class="icon-btn" onclick="removeCycleBuilderStep(this)" title="Remover">✕</button>`; wrap.appendChild(row); renumberCycleBuilder();
+}
+function removeCycleBuilderStep(btn){const wrap=document.getElementById('cycleBuilderSteps');if(!wrap||wrap.children.length<=1){toast('O ciclo precisa ter pelo menos uma etapa');return;}btn.closest('.cycle-step-row').remove();renumberCycleBuilder();}
+function renumberCycleBuilder(){document.querySelectorAll('#cycleBuilderSteps .cycle-step-row').forEach((r,i)=>r.querySelector('.cycle-step-number').textContent=i+1);}
+function saveCycleFromBuilder(){
+  const name=document.getElementById('cycleName').value.trim();
+  const repeatsRaw=document.getElementById('cycleRepeats').value.trim();
+  const repeatsNumber=Number(repeatsRaw);
+  if(!name){toast('Informe o nome do ciclo');document.getElementById('cycleName').focus();return;}
+  if(!Number.isInteger(repeatsNumber)||repeatsNumber<1||repeatsNumber>20){toast('As repetições devem ser um número entre 1 e 20');document.getElementById('cycleRepeats').focus();return;}
+  const rows=[...document.querySelectorAll('#cycleBuilderSteps .cycle-step-row')];
+  if(!rows.length){toast('Adicione pelo menos uma etapa ao ciclo');return;}
+  const steps=[];
+  for(const row of rows){
+    const workInput=row.querySelector('.cycle-work');
+    const breakInput=row.querySelector('.cycle-break');
+    const workRaw=workInput.value.trim();
+    const breakRaw=breakInput.value.trim();
+    const work=Number(workRaw);
+    const brk=Number(breakRaw);
+    if(workRaw===''||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos');workInput.focus();return;}
+    if(breakRaw===''||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos');breakInput.focus();return;}
+    steps.push({work,brk});
+  }
+  if(CYCLE_EDITING_ID){
+    const cycle=STATE.settings.pomodoro.cycles.find(c=>c.id===CYCLE_EDITING_ID);
+    if(!cycle){CYCLE_EDITING_ID=null;toast('Não foi possível localizar o ciclo para atualizar');return;}
+    Object.assign(cycle,{name,repeats:repeatsNumber,steps});
+    // Se o ciclo editado está selecionado, sincroniza imediatamente o cronômetro com os novos valores.
+    if(TIMER.planType==='cycle'&&TIMER.cycleId===cycle.id){
+      clearInterval(TIMER.intervalId);TIMER.running=false;TIMER.hasStarted=false;TIMER.endAt=null;
+      TIMER.cycleSteps=steps.map(step=>({...step}));TIMER.cycleRepeats=repeatsNumber;
+      TIMER.cycleStepIndex=0;TIMER.cycleRound=1;TIMER.mode='work';
+      TIMER.currentWorkMinutes=steps[0].work;TIMER.currentBreakMinutes=steps[0].brk;TIMER.remaining=steps[0].work*60;persistTimerRuntime();
+    }
+    CYCLE_EDITING_ID=null;saveState();render();toast('Ciclo atualizado com sucesso');
+  }else{
+    STATE.settings.pomodoro.cycles.push({id:uid(),name,repeats:repeatsNumber,steps});
+    saveState();render();toast('Ciclo salvo com sucesso');
+  }
+}
+function deleteTimerCycle(id){
+  const p=STATE.settings.pomodoro;
+  const item=p.cycles.find(x=>x.id===id);
+  if(!item) return;
+  showDeleteConfirm({
+    title:'Excluir ciclo?',
+    message:`O ciclo “${item.name}” será excluído.`,
+    detail:`${item.repeats} repetição(ões) · ${item.steps.map(st=>st.work+'/'+st.brk).join(' → ')}`,
+    onConfirm:()=>{
+      p.cycles=p.cycles.filter(x=>x.id!==id);
+      if(TIMER.cycleId===id){TIMER.planType='preset';TIMER.cycleId=null;const next=p.presets[0];TIMER.presetId=next.id;resetTimer();}
+      saveState();render();toast('Ciclo excluído');
+    }
+  });
+}
+function saveTerms(){
+  STATE.settings.terms = {area:document.getElementById('cfgArea').value, sub:document.getElementById('cfgSub').value};
+  saveState(); toast('Terminologia salva');
+}
+function savePomodoro(){
+  const wRaw=document.getElementById('cfgWork').value.trim(),bRaw=document.getElementById('cfgBrk').value.trim();
+  const work=Number(wRaw),brk=Number(bRaw);
+  if(!wRaw||!Number.isInteger(work)||work<1||work>180){toast('O foco deve ser um número inteiro entre 1 e 180 minutos.');return;}
+  if(!bRaw||!Number.isInteger(brk)||brk<0||brk>180){toast('A pausa deve ser um número inteiro entre 0 e 180 minutos.');return;}
+  STATE.settings.pomodoro.work=work;STATE.settings.pomodoro.brk=brk;
+  if(!STATE.settings.pomodoro.presets.length)STATE.settings.pomodoro.presets=[{id:uid(),name:'Padrão',work,brk}];
+  STATE.settings.pomodoro.presets[0].work=work;STATE.settings.pomodoro.presets[0].brk=brk;
+  if(TIMER.planType==='preset')TIMER.presetId=STATE.settings.pomodoro.presets[0].id;
+  resetTimer();saveState();toast('Pomodoro atualizado');
+}
+function saveIntervals(){
+  const raw=document.getElementById('cfgIntervals').value.split(',').map(x=>x.trim());
+  if(!raw.length||raw.some(x=>!x||!Number.isInteger(Number(x))||Number(x)<1||Number(x)>365)){
+    toast('Informe intervalos inteiros entre 1 e 365 dias, separados por vírgula.');return;
+  }
+  const arr=[...new Set(raw.map(Number))].sort((a,b)=>a-b).slice(0,20);
+  if(!arr.length){toast('Informe pelo menos um intervalo válido.');return;}
+  STATE.settings.reviewIntervals=arr;
+  STATE.notes.forEach(n=>{if(Number(n.interval)>=arr.length)n.interval=arr.length-1;});
+  saveState();render();toast('Intervalos de revisão salvos');
+}
+function exportJSON(){
+  if(!DATA_READY){toast('Carregue os dados antes de exportar um backup.');return;}
+  const snapshot={...STATE,backupMeta:{app:'Central de Estudos',schemaVersion:2,exportedAt:new Date().toISOString()}};
+  const blob=new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download='backup-central-estudos-'+todayISO()+'.json';a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function importJSON(file){
+  if(!file)return;
+  if(!DATA_READY){toast('Carregue os dados da conta antes de importar.');return;}
+  if(file.size>20*1024*1024){toast('O backup ultrapassa o limite de 20 MB.');return;}
+  try{
+    const text=await file.text();
+    const parsed=JSON.parse(text);
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('A estrutura do arquivo não é válida.');
+    const knownCollections=['topics','notes','goals','sessions','events','doubts','questions','flashcards'];
+    const requiredCollections=['topics','notes','goals','sessions'];
+    if(!requiredCollections.every(k=>Array.isArray(parsed[k]))){
+      throw new Error('Backup inválido: faltam coleções essenciais. Exporte um backup pela Central de Estudos.');
+    }
+    if(parsed.schemaVersion!==undefined&&(!Number.isInteger(Number(parsed.schemaVersion))||Number(parsed.schemaVersion)<1||Number(parsed.schemaVersion)>2)){
+      throw new Error('Este backup foi criado por uma versão incompatível da aplicação.');
+    }
+    for(const key of knownCollections){
+      if(parsed[key]!==undefined&&!Array.isArray(parsed[key]))throw new Error(`O campo "${key}" possui formato inválido.`);
+    }
+    if(!confirm('Importar este backup substituirá os dados atuais. Exporte um backup recente antes de continuar. Deseja prosseguir?'))return;
+    const nextState=normalizeState({...parsed,schemaVersion:2});
+    STATE=nextState;
+    render();
+    const saved=await saveStateNow();
+    if(saved){toast('Backup importado e sincronizado com sucesso.');render();}
+    else{toast('Backup carregado nesta sessão, mas a sincronização falhou. Use “Tentar novamente”.');updateSaveStatusUI();}
+  }catch(e){
+    console.error('Falha ao importar backup',e);
+    toast(e instanceof SyntaxError?'Arquivo JSON inválido.':'Backup inválido: '+(e.message||'verifique o arquivo.'));
+  }
+}
+async function resetAll(){
+  if(!DATA_READY){toast('Carregue os dados da conta antes de continuar.');return;}
+  if(!confirm('Isso vai apagar TODOS os seus dados permanentemente. Exporte um backup antes de continuar. Tem certeza?'))return;
+  if(!confirm('Última confirmação: apagar todos os dados dessa conta mesmo?'))return;
+  STATE=defaultState();
+  render();
+  const saved=await saveStateNow();
+  if(saved){toast('Dados apagados e alteração sincronizada.');render();}
+  else{toast('A limpeza não foi sincronizada. Tente salvar novamente antes de sair.');}
+}
+
+/* =====================================================================
+   BUSCA GLOBAL
+===================================================================== */
+function openSearch(){
+  showModal(`
+    <div class="modal-head"><h2>Busca global</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <input id="searchInput" placeholder="Pesquisar em anotações, tópicos, tags, metas, dúvidas..." style="width:100%;font-size:14px;padding:10px 12px;" oninput="runSearch(this.value)" autofocus>
+    <div class="results" id="searchResults"></div>
+  `, false, 'search-modal');
+  setTimeout(()=>document.getElementById('searchInput').focus(), 50);
+}
+function runSearch(q){
+  const el = document.getElementById('searchResults');
+  if(!q || q.trim().length<1){ el.innerHTML=''; return; }
+  const query = q.toLowerCase();
+  const results = [];
+  STATE.notes.forEach(n=>{ if((n.title+' '+stripHtml(n.html)+' '+(n.tags||[]).join(' ')).toLowerCase().includes(query)) results.push({ic:'📝',t:n.title||'Sem título',s:'Anotação'+(n.topicId?' · '+topicPath(n.topicId):''), action:()=>{closeModal();openNoteModal(n.id);}}); });
+  STATE.topics.forEach(t=>{ if(t.name.toLowerCase().includes(query)) results.push({ic:'📚',t:t.name,s:'Tópico', action:()=>{closeModal();filterByTopic(t.id);navigate('anotacoes');}}); });
+  STATE.goals.forEach(g=>{ if(g.title.toLowerCase().includes(query)) results.push({ic:'🎯',t:g.title,s:'Meta', action:()=>{closeModal();navigate('metas');setTimeout(()=>openGoalModal(g.id),80);}}); });
+  STATE.doubts.forEach(d=>{ if(d.question.toLowerCase().includes(query)) results.push({ic:'❓',t:d.question,s:'Dúvida', action:()=>{closeModal();navigate('duvidas');setTimeout(()=>openDoubtModal(d.id),80);}}); });
+  STATE.questions.forEach(qq=>{ if((qq.question+' '+qq.answer+' '+stripHtml(qq.questionHtml||'')+' '+stripHtml(qq.answerHtml||'')+' '+(qq.tags||[]).join(' ')).toLowerCase().includes(query)) results.push({ic:'📋',t:qq.question||'Questão com imagem',s:'Questão'+(qq.topicId?' · '+topicPath(qq.topicId):''), action:()=>{closeModal();navigate('questoes');setTimeout(()=>openQuestionModal(qq.id),80);}}); });
+  STATE.flashcards.forEach(f=>{ if((f.front+' '+f.back).toLowerCase().includes(query)) results.push({ic:'🧠',t:f.front,s:'Flashcard', action:()=>{closeModal();navigate('flashcards');}}); });
+  STATE.events.forEach(ev=>{if((ev.title+' '+ev.type).toLowerCase().includes(query))results.push({ic:'📅',t:ev.title,s:'Prova ou evento · '+fmtDateShort(ev.date),action:()=>{closeModal();navigate('eventos');setTimeout(()=>openEventModal(ev.id),80);}}); });
+
+  el.innerHTML = results.length? results.slice(0,30).map((r,i)=>`
+    <div class="search-result" onclick="window.__searchActions[${i}]()">
+      <div class="ic">${r.ic}</div>
+      <div><div class="t">${esc(r.t)}</div><div class="s">${esc(r.s)}</div></div>
+    </div>`).join('') : `<div class="empty-state" style="padding:24px;">Nada encontrado para "${esc(q)}"</div>`;
+  window.__searchActions = results.slice(0,30).map(r=>r.action);
+}
+
+/* =====================================================================
+   MODAL SYSTEM
+===================================================================== */
+const EDITOR_THEME_KEY='central-estudos-editor-theme-v2';
+let EDITOR_THEME=localStorage.getItem(EDITOR_THEME_KEY)==='light'?'light':'dark';
+let DRAFT_TIMEOUT=null, ACTIVE_DRAFT_KEY=null;
+function editorThemeControl(){return `<button type="button" class="btn btn-sm editor-theme-button" onclick="toggleEditorTheme()" title="Alternar apenas os campos de edição">${EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro'}</button>`;}
+function applyEditorTheme(){document.querySelectorAll('.modal-overlay .editor-body,.modal-overlay .question-editor-body,.modal-overlay textarea,.modal-overlay input[type=text],.modal-overlay input:not([type]),.modal-overlay [contenteditable=true]').forEach(el=>el.classList.toggle('editor-light',EDITOR_THEME==='light'));}
+function toggleEditorTheme(){EDITOR_THEME=EDITOR_THEME==='light'?'dark':'light';localStorage.setItem(EDITOR_THEME_KEY,EDITOR_THEME);applyEditorTheme();document.querySelectorAll('.editor-theme-button').forEach(el=>el.textContent=EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro');}
+function draftKeyForModal(){const m=document.getElementById('activeModalOverlay');if(!m)return null;const fields=['mNoteBody','mFlashFront','mQuestionBody','mGoalTitle','mDoubtQ','mSessObs'];const match=fields.find(id=>m.querySelector('#'+id));return match?'ce-draft-'+(CURRENT_USER?.id||'anon')+'-'+match+'-'+(m.querySelector('[data-draft-id]')?.dataset.draftId||'new'):null;}
+function draftSnapshot(m){const out={};m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{if(el.type==='file'||el.type==='password'||el.type==='hidden'||el.type==='checkbox'||el.type==='radio')return;const key=el.id||'field-'+i;out[key]=el.isContentEditable?el.innerHTML:el.value;});return out;}
+function attachDraftAutosave(){const m=document.getElementById('activeModalOverlay');if(!m)return;ACTIVE_DRAFT_KEY=draftKeyForModal();if(!ACTIVE_DRAFT_KEY)return;
+ const key=ACTIVE_DRAFT_KEY;let saved=null;try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch{}
+ if(saved&&saved.values&&confirm('Existe um rascunho de edição neste navegador. Deseja recuperá-lo?')){m.querySelectorAll('input,textarea,select,[contenteditable=true]').forEach((el,i)=>{const k=el.id||'field-'+i;if(saved.values[k]!==undefined){if(el.isContentEditable)el.innerHTML=sanitizeNoteHtml(saved.values[k]);else if(el.type!=='password'&&el.type!=='file')el.value=saved.values[k];}});}
+ const handler=()=>{clearTimeout(DRAFT_TIMEOUT);DRAFT_TIMEOUT=setTimeout(()=>{try{localStorage.setItem(key,JSON.stringify({savedAt:Date.now(),values:draftSnapshot(m)}));const el=m.querySelector('.draft-status');if(el)el.textContent='Rascunho salvo neste dispositivo';}catch(e){console.warn('Rascunho indisponível',e);}},650);};
+ m.addEventListener('input',handler);m.addEventListener('change',handler);
+ const footer=document.createElement('div');footer.className='draft-toolbar';footer.innerHTML=editorThemeControl()+'<span class="draft-status">Rascunho local automático · não sincronizado com a nuvem</span>';m.querySelector('.modal')?.prepend(footer);applyEditorTheme();
+}
+function clearActiveDraft(){clearTimeout(DRAFT_TIMEOUT);if(ACTIVE_DRAFT_KEY)localStorage.removeItem(ACTIVE_DRAFT_KEY);ACTIVE_DRAFT_KEY=null;}
+function showModal(innerHtml, wide, extraClass){
+  const overlay = document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.id='activeModalOverlay';
+  overlay.onclick = (e)=>{ if(e.target===overlay) closeModal(); };
+  overlay.innerHTML = `<div class="modal ${wide?'wide':''} ${extraClass||''}">${innerHtml}</div>`;
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown', escCloseHandler);
+  attachDraftAutosave();
+}
+function escCloseHandler(e){ if(e.key==='Escape') closeModal(); }
+function closeModal(){
+  const m = document.getElementById('activeModalOverlay');
+  if(m) m.remove();
+  document.removeEventListener('keydown', escCloseHandler);
+}
+
+/* =====================================================================
+   CONFIRMAÇÃO DE EXCLUSÃO
+===================================================================== */
+let DELETE_CONFIRM_CALLBACK = null;
+function showDeleteConfirm({title='Excluir item?', message='Este item será excluído.', detail='Esta ação não pode ser desfeita.', onConfirm}){
+  closeDeleteConfirm();
+  DELETE_CONFIRM_CALLBACK = typeof onConfirm==='function' ? onConfirm : null;
+  const overlay=document.createElement('div');
+  overlay.className='delete-confirm-overlay';
+  overlay.id='deleteConfirmOverlay';
+  overlay.setAttribute('role','dialog');
+  overlay.setAttribute('aria-modal','true');
+  overlay.setAttribute('aria-labelledby','deleteConfirmTitle');
+  overlay.innerHTML=`
+    <div class="delete-confirm-card">
+      <div class="delete-confirm-icon" aria-hidden="true">🗑</div>
+      <div class="delete-confirm-kicker">CONFIRMAÇÃO</div>
+      <h3 id="deleteConfirmTitle">${esc(title)}</h3>
+      <p>${esc(message)}</p>
+      <div class="delete-confirm-detail">${esc(detail)}</div>
+      <div class="delete-confirm-actions">
+        <button type="button" class="btn" data-delete-cancel>Cancelar</button>
+        <button type="button" class="btn btn-danger delete-confirm-submit"><span class="trash-icon">🗑</span> Excluir</button>
+      </div>
+    </div>`;
+  overlay.addEventListener('click',e=>{if(e.target===overlay)closeDeleteConfirm();});
+  overlay.querySelector('[data-delete-cancel]').addEventListener('click',closeDeleteConfirm);
+  overlay.querySelector('.delete-confirm-submit').addEventListener('click',()=>{
+    const cb=DELETE_CONFIRM_CALLBACK;
+    closeDeleteConfirm();
+    if(cb) cb();
+  });
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown',deleteConfirmKeyHandler);
+  requestAnimationFrame(()=>{ overlay.classList.add('show'); overlay.querySelector('[data-delete-cancel]')?.focus(); });
+}
+function deleteConfirmKeyHandler(e){
+  if(e.key==='Escape') closeDeleteConfirm();
+  if(e.key==='Enter' && document.getElementById('deleteConfirmOverlay')) document.querySelector('.delete-confirm-submit')?.click();
+}
+function closeDeleteConfirm(){
+  const overlay=document.getElementById('deleteConfirmOverlay');
+  if(overlay){ overlay.classList.remove('show'); setTimeout(()=>overlay.remove(),120); }
+  DELETE_CONFIRM_CALLBACK=null;
+  document.removeEventListener('keydown',deleteConfirmKeyHandler);
+}
+
+/* =====================================================================
+   KEYBOARD SHORTCUTS
+===================================================================== */
+document.addEventListener('keydown',(e)=>{
+  if(e.key==='/'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)&&!document.getElementById('activeModalOverlay')){
+    e.preventDefault();openSearch();
+  }
+});
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&TIMER.running&&TIMER.endAt){
+    TIMER.remaining=Math.max(0,Math.ceil((TIMER.endAt-Date.now())/1000));
+    if(TIMER.remaining<=0)handleTimerPhaseEnd();
+    refreshTimerDisplay();
+  }
+});
+window.addEventListener('beforeunload',(e)=>{
+  if(DATA_READY&&(SAVE_STATUS==='pending'||SAVE_STATUS==='saving'||SAVE_STATUS==='error')){
+    e.preventDefault();
+    e.returnValue='';
+  }
+});
+
+/* =====================================================================
+   INIT
+===================================================================== */
+/* =====================================================================
+   AUTENTICAÇÃO
+===================================================================== */
+let AUTH_MODE = 'login'; // 'login' | 'signup'
+let AUTH_MSG = null; // {type:'error'|'success', text}
+let AUTH_VIEW = 'landing'; // landing | auth
+let PASSWORD_RECOVERY_MODE = false;
+const APP_REDIRECT_URL=()=>new URL('auth-callback.html',window.location.href).href;
+
+function renderPublicLanding(){
+  document.body.classList.add('public-landing-body');
+  const app=document.getElementById('app');
+  app.innerHTML=`
+    <div class="public-site">
+      <header class="public-nav">
+        <a class="public-brand" href="#inicio" aria-label="Central de Estudos - início"><span class="public-brand-mark">✦</span><span>Central de Estudos</span></a>
+        <nav class="public-nav-actions" aria-label="Navegação principal"><a href="#recursos">Recursos</a><a href="#como-funciona">Como funciona</a><button class="btn btn-ghost" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button><button class="btn btn-primary" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button></nav>
+      </header>
+      <main>
+        <section class="public-hero" id="inicio">
+          <div class="public-hero-copy"><div class="public-eyebrow"><span></span> SEU ESPAÇO DE APRENDIZAGEM</div><h1>Estude com intenção.<br><em>Evolua com consistência.</em></h1><p>Planeje sua rotina, organize conteúdos, pratique a lembrança e acompanhe sua evolução em um só lugar — com ferramentas feitas para apoiar o seu jeito de estudar.</p><div class="public-hero-actions"><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Começar gratuitamente <span aria-hidden="true">→</span></button><button class="public-secondary-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Já tenho uma conta</button></div><div class="public-hero-note"><span>✓</span> Planejamento · Revisão · Foco · Progresso</div></div>
+          <div class="public-hero-visual" aria-label="Prévia ilustrativa do painel de estudos"><div class="preview-glow"></div><div class="preview-window"><div class="preview-window-top"><span class="preview-logo">✦</span><span>Seu espaço de estudos</span><span class="preview-window-dots">•••</span></div><div class="preview-welcome"><small>PLANO DE HOJE</small><strong>Um passo de cada vez.</strong><span>Organize suas prioridades e comece pelo que importa.</span></div><div class="preview-stats"><div><span>Foco concluído</span><strong>01h 40m</strong><i><b style="width:66%"></b></i></div><div><span>Metas da semana</span><strong>3 de 5</strong><i><b style="width:60%"></b></i></div></div><div class="preview-task-list"><div class="preview-row"><span class="preview-check">✓</span><span><b>Revisar anotações</b><small>Biologia · 25 min</small></span><span class="preview-pill">Concluído</span></div><div class="preview-row"><span class="preview-empty-check"></span><span><b>Praticar flashcards</b><small>Anatomia · 15 min</small></span><span class="preview-row-arrow">↗</span></div><div class="preview-row"><span class="preview-empty-check"></span><span><b>Resolver questões</b><small>Fisiologia · 20 min</small></span><span class="preview-row-arrow">↗</span></div></div><div class="preview-timer"><span>◷ Sessão de foco</span><strong>25:00</strong><span>Seu tempo, seu ritmo.</span></div></div><div class="preview-floating preview-floating-top"><span>✦</span><div><strong>Revisão inteligente</strong><small>Recupere o que aprendeu</small></div></div><div class="preview-floating preview-floating-bottom"><span>↗</span><div><strong>Progresso visível</strong><small>Pequenos avanços contam</small></div></div></div>
+        </section>
+        <section class="public-value-strip"><div><strong>Organize</strong><span>matérias e conteúdos</span></div><div><strong>Pratique</strong><span>questões e flashcards</span></div><div><strong>Concentre-se</strong><span>sessões de foco</span></div><div><strong>Acompanhe</strong><span>seu progresso</span></div></section>
+        <section class="public-section" id="recursos"><div class="public-section-heading"><div class="public-eyebrow">UM SISTEMA, VÁRIAS POSSIBILIDADES</div><h2>Seu estudo não precisa ficar espalhado.</h2><p>Conecte o planejamento à prática: organize o conteúdo, transforme-o em revisão e veja seu esforço ganhar forma.</p></div><div class="public-feature-grid"><article class="public-feature feature-large"><div class="public-feature-icon amber">▦</div><span class="public-feature-kicker">PLANEJAMENTO</span><h3>Clareza para o dia a dia</h3><p>Reúna calendário, metas, eventos e sessões em um fluxo de organização que ajuda a decidir o próximo passo.</p><div class="feature-mini-calendar"><span>SEG</span><span>TER</span><span>QUA</span><span>QUI</span><span>SEX</span><b>✓</b><b>•</b><b>✓</b><b>•</b><b>✓</b></div></article><article class="public-feature"><div class="public-feature-icon teal">▤</div><span class="public-feature-kicker">CONHECIMENTO</span><h3>Anotações com contexto</h3><p>Organize suas ideias por área, use formatação e mantenha conteúdos importantes acessíveis.</p></article><article class="public-feature"><div class="public-feature-icon violet">▣</div><span class="public-feature-kicker">PRÁTICA ATIVA</span><h3>Questões e flashcards</h3><p>Treine a lembrança, registre seus resultados de revisão e volte aos cartões no momento planejado.</p></article><article class="public-feature"><div class="public-feature-icon blue">◷</div><span class="public-feature-kicker">CONCENTRAÇÃO</span><h3>Foco no seu ritmo</h3><p>Use timers, configure pausas e monte ciclos de estudo que acompanhem a sua rotina.</p></article><article class="public-feature feature-wide"><div class="public-feature-icon green">↗</div><div><span class="public-feature-kicker">EVOLUÇÃO</span><h3>Veja o caminho que está construindo</h3><p>Acompanhe suas sessões, metas e atividades para entender melhor sua consistência ao longo do tempo.</p></div><div class="feature-progress-art"><span>Foco semanal</span><strong>+1 sessão de cada vez</strong><i><b style="width:72%"></b></i><small>Pequenos passos, progresso real.</small></div></article></div></section>
+        <section class="public-how" id="como-funciona"><div class="public-section-heading"><div class="public-eyebrow">SIMPLES PARA COMEÇAR</div><h2>Transforme intenção em rotina.</h2><p>Comece com o essencial e ajuste a sua central conforme suas necessidades mudam.</p></div><div class="public-steps"><article><span>01</span><h3>Organize</h3><p>Crie suas áreas, tópicos e objetivos de estudo.</p></article><article><span>02</span><h3>Pratique</h3><p>Registre conteúdos, resolva questões e revise flashcards.</p></article><article><span>03</span><h3>Acompanhe</h3><p>Use sessões e indicadores para refletir sobre o seu progresso.</p></article></div></section>
+        <section class="public-cta-section"><div><span class="public-eyebrow">COMECE COM O PRÓXIMO PASSO</span><h2>Seu próximo avanço começa com uma boa rotina.</h2><p>Crie seu espaço e organize o que você quer aprender.</p></div><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar minha conta <span aria-hidden="true">→</span></button></section>
+      </main>
+      <footer class="public-footer"><a class="public-brand" href="#inicio"><span class="public-brand-mark">✦</span><span>Central de Estudos</span></a><span>Organize. Pratique. Evolua.</span><button type="button" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Acessar minha conta</button></footer>
+    </div>`;
+}
+
+function renderAuth(){
+  document.body.classList.remove('public-landing-body');
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <button type="button" class="auth-back-link" onclick="AUTH_VIEW='landing';AUTH_MSG=null;renderPublicLanding()">← Voltar à apresentação</button>
+        <div class="auth-brand"><div class="dot"></div><span>Central de Estudos</span></div>
+        <div class="auth-tabs">
+          <button class="auth-tab ${AUTH_MODE==='login'?'active':''}" onclick="AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button>
+          <button class="auth-tab ${AUTH_MODE==='signup'?'active':''}" onclick="AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button>
+        </div>
+        ${AUTH_MSG? `<div class="auth-msg ${AUTH_MSG.type}">${esc(AUTH_MSG.text)}</div>` : ''}
+        <form id="authForm" onsubmit="return handleAuthSubmit(event)">
+          <div class="field"><label for="authEmail">E-mail</label><input type="email" id="authEmail" autocomplete="email" required placeholder="voce@email.com"></div>
+          <div class="field"><label for="authPassword">Senha</label><input type="password" id="authPassword" autocomplete="${AUTH_MODE==='login'?'current-password':'new-password'}" required minlength="8" placeholder="mínimo 8 caracteres"></div>
+          <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:6px;" id="authSubmitBtn">${AUTH_MODE==='login'?'Entrar':'Criar conta'}</button>
+        </form>
+        ${AUTH_MODE==='login'? `<div style="text-align:center;margin-top:12px;"><a class="es_key" onclick="handleForgotPassword()">Esqueci minha senha</a></div>` : ''}
+        <div class="auth-foot">Seu espaço pessoal para organizar matérias, anotações, questões e sessões de estudo.</div>
+      </div>
+    </div>
+  `;
+}
+function renderPasswordRecovery(){
+  document.body.classList.remove('public-landing-body');
+  const app=document.getElementById('app');
+  app.innerHTML=`
+    <div class="auth-wrap"><div class="auth-card">
+      <div class="auth-brand"><div class="dot"></div><span>Central de Estudos</span></div>
+      <div class="auth-recovery-mark">🔐</div>
+      <h1 class="auth-recovery-title">Defina uma nova senha</h1>
+      <p class="auth-recovery-copy">Escolha uma senha segura para voltar ao seu espaço de estudos.</p>
+      ${AUTH_MSG?`<div class="auth-msg ${AUTH_MSG.type}" role="status">${esc(AUTH_MSG.text)}</div>`:''}
+      <form onsubmit="return handleSetNewPassword(event)">
+        <div class="field"><label for="newPassword">Nova senha</label><input id="newPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="Use pelo menos 8 caracteres"></div>
+        <div class="field"><label for="confirmNewPassword">Confirmar senha</label><input id="confirmNewPassword" type="password" minlength="8" autocomplete="new-password" required placeholder="Digite a senha novamente"></div>
+        <button class="btn btn-primary" type="submit" style="width:100%;justify-content:center;">Atualizar senha</button>
+      </form>
+    </div></div>`;
+}
+async function handleSetNewPassword(e){
+  e.preventDefault();
+  const password=document.getElementById('newPassword').value;
+  const confirmPassword=document.getElementById('confirmNewPassword').value;
+  if(password.length<8){AUTH_MSG={type:'error',text:'Use uma senha com pelo menos 8 caracteres.'};renderPasswordRecovery();return false;}
+  if(password!==confirmPassword){AUTH_MSG={type:'error',text:'As senhas não coincidem.'};renderPasswordRecovery();return false;}
+  try{
+    const {data,error}=await sb.auth.updateUser({password});
+    if(error)throw error;
+    PASSWORD_RECOVERY_MODE=false;AUTH_MODE='login';AUTH_MSG={type:'success',text:'Senha atualizada com sucesso.'};
+    if(data?.user){await bootAuthenticated(data.user);}else renderAuth();
+  }catch(err){AUTH_MSG={type:'error',text:translateAuthError(err.message)};renderPasswordRecovery();}
+  return false;
+}
+async function handleAuthSubmit(e){
+  e.preventDefault();
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  if(AUTH_MODE==='signup'&&password.length<8){AUTH_MSG={type:'error',text:'Use uma senha com pelo menos 8 caracteres.'};renderAuth();return false;}
+  const btn = document.getElementById('authSubmitBtn');
+  const APP_URL = APP_REDIRECT_URL();
+  btn.disabled = true; btn.textContent = 'Aguarde...';
+  AUTH_MSG = null;
+  try{
+    if(AUTH_MODE==='signup'){
+      const { data, error } = await sb.auth.signUp({
+        email, password,
+        options: { emailRedirectTo: APP_URL }
+        // Antigo= emailRedirectTo: window.location.origin + window.location.pathname
+      });
+      if(error) throw error;
+      if(data.user && !data.session){
+        AUTH_MSG = {type:'success', text:'Conta criada! Verifique seu e-mail para confirmar antes de entrar.'};
+        AUTH_MODE='login'; renderAuth(); return;
+      }
+    } else {
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if(error) throw error;
+    }
+    // onAuthStateChange cuida do redirecionamento para o app
+  }catch(err){
+    AUTH_MSG = {type:'error', text: translateAuthError(err.message)};
+    renderAuth();
+  }
+  return false;
+}
+async function handleForgotPassword(){
+  const email = document.getElementById('authEmail').value.trim();
+  if(!email){ AUTH_MSG={type:'error',text:'Digite seu e-mail no campo acima primeiro.'}; renderAuth(); return; }
+  try{
+    const { error } = await sb.auth.resetPasswordForEmail(email,{redirectTo:APP_REDIRECT_URL()});
+    if(error) throw error;
+    AUTH_MSG = {type:'success', text:'Enviamos um link de redefinição de senha para o seu e-mail.'};
+  }catch(err){
+    AUTH_MSG = {type:'error', text: translateAuthError(err.message)};
+  }
+  renderAuth();
+}
+function translateAuthError(msg){
+  if(!msg) return 'Ocorreu um erro. Tente novamente.';
+  if(msg.includes('Invalid login credentials')) return 'E-mail ou senha incorretos.';
+  if(msg.includes('User already registered')) return 'Já existe uma conta com este e-mail — tente entrar.';
+  if(msg.includes('Password should be')) return 'A senha não atende ao tamanho mínimo exigido.';
+  if(msg.includes('Email not confirmed')) return 'Confirme seu e-mail antes de entrar.';
+  if(msg.toLowerCase().includes('rate limit')) return 'Muitas tentativas em pouco tempo. Aguarde e tente novamente.';
+  if(msg.toLowerCase().includes('network')) return 'Falha de conexão. Verifique a internet e tente novamente.';
+  return 'Não foi possível concluir a operação. Verifique os dados e tente novamente.';
+}
+async function logout(){
+  if(!confirm('Sair da sua conta?'))return;
+  if(DATA_READY&&(SAVE_STATUS==='pending'||SAVE_STATUS==='saving')){
+    const saved=await saveStateNow();
+    if(!saved&&!confirm('Ainda existem alterações que não foram sincronizadas. Deseja sair mesmo assim?'))return;
+  }else if(SAVE_STATUS==='error'&&!confirm('A última sincronização falhou. Deseja sair mesmo assim?'))return;
+  try{const {error}=await sb.auth.signOut();if(error)throw error;}
+  catch(e){console.error(e);toast('Não foi possível sair agora. Tente novamente.');}
+}
+
+/* =====================================================================
+   INIT
+===================================================================== */
+async function bootAuthenticated(user){
+  if(CURRENT_USER&&CURRENT_USER.id!==user.id){
+    clearTimeout(SAVE_TIMER);clearInterval(TIMER.intervalId);DATA_READY=false;SAVE_STATUS='saved';
+  }
+  CURRENT_USER=user;
+  renderDataLoading();
+  const ok=await loadState();
+  if(!ok){renderDataLoadError();return false;}
+  restoreTimerRuntime();
+  render();
+  if(TIMER.running)refreshTimerDisplay();
+  return true;
+}
+(async function init(){
+  try{
+    const {data:{session},error}=await sb.auth.getSession();
+    if(error)throw error;
+    if(PASSWORD_RECOVERY_MODE)renderPasswordRecovery();else if(session?.user)await bootAuthenticated(session.user);
+    else renderPublicLanding();
+  }catch(e){
+    console.error('Falha ao iniciar autenticação',e);
+    AUTH_MSG={type:'error',text:'Não foi possível iniciar sua sessão. Recarregue a página e tente novamente.'};
+    renderAuth();
+  }
+  sb.auth.onAuthStateChange((event,session)=>{
+    if(event==='PASSWORD_RECOVERY'){
+      PASSWORD_RECOVERY_MODE=true;
+      AUTH_MSG=null;
+      renderPasswordRecovery();
+      return;
+    }
+    if(event==='SIGNED_IN'&&!PASSWORD_RECOVERY_MODE&&session?.user&&(!CURRENT_USER||CURRENT_USER.id!==session.user.id)){
+      queueMicrotask(()=>bootAuthenticated(session.user));
+    }
+    if(event==='SIGNED_OUT'){
+      clearTimeout(SAVE_TIMER);clearInterval(TIMER.intervalId);
+      CURRENT_USER=null;DATA_READY=false;DATA_LOAD_ERROR=null;
+      STATE=defaultState();SAVE_STATUS='saved';SAVING=false;SAVE_VERSION++;
+      PASSWORD_RECOVERY_MODE=false;AUTH_MODE='login';AUTH_MSG=null;
+      AUTH_VIEW='landing';renderPublicLanding();
+    }
+  });
+  const recoveryParams=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
+  if(recoveryParams.get('type')==='recovery'){
+    PASSWORD_RECOVERY_MODE=true;
+    renderPasswordRecovery();
+  }
+})();
+</script>
+</body>
+</html>-->
