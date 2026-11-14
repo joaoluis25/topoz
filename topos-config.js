@@ -1,8 +1,8 @@
-/* TOPOZ Estudos V5.6 — configuração pública de STAGING, sem chaves no pacote.
- * PREENCHA SOMENTE APÓS EXECUTAR MIGRAÇÕES, TESTES RLS E BACKUP.
- * Nunca coloque service_role aqui. Mantenha produção isolada.
+/* TOPOZ Estudos — configuração pública extraída do index.html fornecido.
+ * Não coloque service_role, sb_secret_ nem tokens privados neste arquivo.
+ * Carregado antes de topoz-connection.js.
  */
-window.TOPOS_PUBLIC_CONFIG=Object.freeze({
-  url:'https://SEU-STAGING.supabase.co',
-  anonKey:'SUA_CHAVE_PUBLICAVEL_DE_STAGING'
+window.TOPOS_PUBLIC_CONFIG = Object.freeze({
+  url: "https://btyxrzknkygylvnrzsuo.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk"
 });

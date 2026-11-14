@@ -1,0 +1,27 @@
+# Correção de configuração — TOPOZ Estudos V5.6.1
+
+## Diagnóstico
+O index.html enviado já contém URL real e uma chave pública JWT anon, porém a
+verificação de conexão usa exclusivamente `window.TOPOS_PUBLIC_CONFIG`,
+carregada por `topos-config.js`. O arquivo distribuído na versão V5.6.1
+continha valores de exemplo. Assim, `SUPABASE_CONFIG_READY` ficava falso mesmo
+quando a chave no HTML tinha formato coerente.
+
+## Como aplicar
+1. Faça uma cópia de segurança da pasta atual do aplicativo.
+2. Copie `topos-config.js` deste pacote para a MESMA pasta que contém
+   `index.html`, substituindo o `topos-config.js` anterior. Não substitua o
+   `index.html` atual nem apague os demais arquivos.
+3. Abra o projeto com Live Server e pressione Ctrl+Shift+R para forçar
+   atualização dos scripts em cache.
+4. Acesse `diagnostico-conexao.html` (se disponível) e depois `index.html`.
+
+## Cuidados
+- A chave pública `anon` é própria para utilização no navegador, sempre com
+  políticas RLS corretas no Supabase. Nunca use `service_role`/`sb_secret_` aqui.
+- A validação da forma da chave não verifica sua assinatura, revogação ou
+  permissão para acessar seu banco remoto.
+- Se surgir erro sobre campo `revision`/função `save_study_data_v56`, será uma
+  etapa SEPARADA: migrações pendentes da V5.6. Não execute migrações em produção
+  sem backup, análise de impacto e teste em staging.
+- Não foi feita nenhuma alteração no Supabase remoto.
