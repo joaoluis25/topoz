@@ -45,8 +45,8 @@
    (Project Settings → API, no painel do Supabase)
 ===================================================================== */
 const SUPABASE_CONFIG_STATUS = (window.TOPOS_CONNECTION?.check?.() || {ready:false,code:'validator_missing',message:'O arquivo topoz-connection.js não foi carregado. Verifique a pasta da aplicação.',url:'',anonKey:''});
-const SUPABASE_URL = SUPABASE_CONFIG_STATUS.url || 'https://configuracao-ausente.invalid';
-const SUPABASE_ANON_KEY = SUPABASE_CONFIG_STATUS.anonKey || 'configuracao-ausente';
+const SUPABASE_URL = SUPABASE_CONFIG_STATUS.url || 'https://btyxrzknkygylvnrzsuo.supabase.co';
+const SUPABASE_ANON_KEY = SUPABASE_CONFIG_STATUS.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk';
 const SUPABASE_CONFIG_READY = SUPABASE_CONFIG_STATUS.ready;
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let CURRENT_USER = null;
