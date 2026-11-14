@@ -1,0 +1,81 @@
+%PDF-1.4
+%TOPOS
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2989 >>
+stream
+0.120 0.500 0.440 rg 0 830 595 12 re f
+0.090 0.170 0.210 rg 0 755 595 75 re f
+1.000 1.000 1.000 rg BT /F2 13 Tf 1 0 0 1 38 798 Tm (TOPOS   /   INTELIGENCIA DE PLANEJAMENTO) Tj ET
+0.650 0.900 0.810 rg BT /F1 10 Tf 1 0 0 1 38 774 Tm (RELATORIO EXECUTIVO  -  Empresa Exemplo) Tj ET
+0.380 0.470 0.520 rg BT /F1 8 Tf 1 0 0 1 38 30 Tm (TOPOS - 14/11/2026 - Informacoes autorizadas) Tj ET
+0.380 0.470 0.520 rg BT /F1 8 Tf 1 0 0 1 527 30 Tm (PAG. 1) Tj ET
+0.140 0.220 0.270 rg BT /F2 21 Tf 1 0 0 1 38 722 Tm (PANORAMA DE ATIVIDADES) Tj ET
+0.140 0.220 0.270 rg BT /F1 10 Tf 1 0 0 1 38 691 Tm (Emitido em 14/11/2026) Tj ET
+0.930 0.960 0.950 rg 38 597 120 72 re f
+0.200 0.420 0.380 rg BT /F2 8 Tf 1 0 0 1 48 648 Tm (ATIVIDADES) Tj ET
+0.140 0.220 0.270 rg BT /F2 22 Tf 1 0 0 1 48 618 Tm (2) Tj ET
+0.930 0.960 0.950 rg 170 597 120 72 re f
+0.200 0.420 0.380 rg BT /F2 8 Tf 1 0 0 1 180 648 Tm (CONCLUIDAS) Tj ET
+0.140 0.220 0.270 rg BT /F2 22 Tf 1 0 0 1 180 618 Tm (0) Tj ET
+0.930 0.960 0.950 rg 302 597 120 72 re f
+0.200 0.420 0.380 rg BT /F2 8 Tf 1 0 0 1 312 648 Tm (EM ANDAMENTO) Tj ET
+0.140 0.220 0.270 rg BT /F2 22 Tf 1 0 0 1 312 618 Tm (1) Tj ET
+0.930 0.960 0.950 rg 434 597 120 72 re f
+0.200 0.420 0.380 rg BT /F2 8 Tf 1 0 0 1 444 648 Tm (ATRASADAS) Tj ET
+0.140 0.220 0.270 rg BT /F2 22 Tf 1 0 0 1 444 618 Tm (0) Tj ET
+0.140 0.220 0.270 rg BT /F2 14 Tf 1 0 0 1 38 561 Tm (Progresso operacional) Tj ET
+0.890 0.930 0.930 rg 38 526 518 15 re f
+0.140 0.610 0.510 rg 38 526 0 15 re f
+0.140 0.220 0.270 rg BT /F1 11 Tf 1 0 0 1 38 502 Tm (0% das atividades concluídas no escopo selecionado.) Tj ET
+0.140 0.220 0.270 rg BT /F2 14 Tf 1 0 0 1 38 467 Tm (Resumo por situacao) Tj ET
+0.140 0.220 0.270 rg BT /F1 10 Tf 1 0 0 1 38 444 Tm (Concluidas) Tj ET
+0.900 0.940 0.930 rg 200 443 305 12 re f
+0.200 0.560 0.480 rg 200 443 0 12 re f
+0.140 0.220 0.270 rg BT /F2 10 Tf 1 0 0 1 521 444 Tm (0) Tj ET
+0.140 0.220 0.270 rg BT /F1 10 Tf 1 0 0 1 38 416 Tm (Em andamento) Tj ET
+0.900 0.940 0.930 rg 200 415 305 12 re f
+0.200 0.560 0.480 rg 200 415 152.5 12 re f
+0.140 0.220 0.270 rg BT /F2 10 Tf 1 0 0 1 521 416 Tm (1) Tj ET
+0.140 0.220 0.270 rg BT /F1 10 Tf 1 0 0 1 38 388 Tm (A fazer) Tj ET
+0.900 0.940 0.930 rg 200 387 305 12 re f
+0.200 0.560 0.480 rg 200 387 152.5 12 re f
+0.140 0.220 0.270 rg BT /F2 10 Tf 1 0 0 1 521 388 Tm (1) Tj ET
+0.140 0.220 0.270 rg BT /F2 15 Tf 1 0 0 1 38 335 Tm (ATIVIDADES E PRAZOS) Tj ET
+0.950 0.970 0.970 rg 38 267 518 56 re f
+0.140 0.220 0.270 rg BT /F2 11 Tf 1 0 0 1 48 309 Tm (Conferir fechamento do mês) Tj ET
+0.360 0.450 0.490 rg BT /F1 9 Tf 1 0 0 1 48 288 Tm (Em andamento  |  Alta  |  Prazo: 15/11/2026) Tj ET
+0.950 0.970 0.970 rg 38 201 518 56 re f
+0.140 0.220 0.270 rg BT /F2 11 Tf 1 0 0 1 48 243 Tm (Organizar pagamentos pendentes) Tj ET
+0.360 0.450 0.490 rg BT /F1 9 Tf 1 0 0 1 48 222 Tm (A fazer  |  Normal  |  Prazo: 17/11/2026) Tj ET
+0.140 0.220 0.270 rg BT /F1 9 Tf 1 0 0 1 38 154 Tm (Dados apresentados conforme permissões do espaço. Não é avaliação de pessoas.) Tj ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000016 00000 n 
+0000000065 00000 n 
+0000000122 00000 n 
+0000000219 00000 n 
+0000000321 00000 n 
+0000000457 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+3498
+%%EOF
