@@ -3,16 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="TOPOS organiza matérias, anotações, flashcards, questões, sessões e revisões de estudo.">
+<meta name="description" content="TOPOZ organiza matérias, anotações, flashcards, questões, sessões e revisões de estudo.">
 <meta name="theme-color" content="#0D1117">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="TOPOS — Planeje. Execute. Evolua.">
+<meta property="og:title" content="TOPOZ — Planeje. Execute. Evolua.">
 <meta property="og:description" content="Estude com organização: matérias, anotações, questões, flashcards e revisões em um só lugar.">
-<title>TOPOS — Planeje. Execute. Evolua.</title>
+<title>TOPOZ — Planeje. Execute. Evolua.</title>
 <link rel="stylesheet" href="style.css">
 
 <link rel="stylesheet" href="topos-design.css">
+<link rel="stylesheet" href="topos-labs.css">
 
 
 
@@ -33,6 +34,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="topos-config.js"></script>
 <script src="topos-voice.js"></script>
+<script src="topos-labs.js"></script>
 <script>
 /* =====================================================================
    CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
@@ -74,6 +76,7 @@ function defaultState(){
     doubts: [],
     questions: [],
     flashcards: [],
+    labs: TOPOS_LABS.normalize({}),
     settings: {
       terms:{area:'Área', sub:'Tópico'},
       pomodoro:{
@@ -200,7 +203,7 @@ function normalizeState(raw){
   }).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
   const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
   const legacyBrk=Math.max(0,Math.min(180,pom.brk===0?0:(Number.isFinite(Number(pom.brk))?Number(pom.brk):5)));
-  return {...base,schemaVersion:4,materials,topics,notes,goals,sessions,events,doubts,flashcards,questions,settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals,contentFontSize:16,notebookVisibility:{questions:settings.notebookVisibility?.questions!==false,flashcards:settings.notebookVisibility?.flashcards!==false},reviewPersonalization:settings.reviewPersonalization&&typeof settings.reviewPersonalization==='object'?{again:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.again)||1)),hard:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.hard)||.7)),good:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.good)||1)),easy:Math.max(.2,Math.min(4,Number(settings.reviewPersonalization.easy)||1.5)),minimum:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.minimum)||1)),maximum:Math.max(1,Math.min(3650,Number(settings.reviewPersonalization.maximum)||365))}:undefined}};
+  return {...base,schemaVersion:4,materials,topics,notes,goals,sessions,events,doubts,flashcards,questions,labs:TOPOS_LABS.normalize(data.labs),settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals,contentFontSize:16,notebookVisibility:{questions:settings.notebookVisibility?.questions!==false,flashcards:settings.notebookVisibility?.flashcards!==false},reviewPersonalization:settings.reviewPersonalization&&typeof settings.reviewPersonalization==='object'?{again:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.again)||1)),hard:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.hard)||.7)),good:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.good)||1)),easy:Math.max(.2,Math.min(4,Number(settings.reviewPersonalization.easy)||1.5)),minimum:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.minimum)||1)),maximum:Math.max(1,Math.min(3650,Number(settings.reviewPersonalization.maximum)||365))}:undefined}};
 }
 async function loadState(){
   if(!CURRENT_USER)return false;
@@ -328,7 +331,7 @@ function renderDataLoadError(){
   document.body.classList.remove('public-landing-body');
   const app=document.getElementById('app');
   const detail=DATA_LOAD_ERROR?.message||'Não foi possível acessar seus dados no momento.';
-  app.innerHTML=`<main class="data-state-wrap"><section class="data-state-card" role="alert"><div class="data-state-icon error">!</div><p class="data-state-eyebrow">SINCRONIZAÇÃO INDISPONÍVEL</p><h1>Seus dados ainda não foram carregados</h1><p>Por segurança, a TOPOS bloqueou a edição para evitar sobrescrever informações salvas.</p><p class="data-state-detail">${esc(detail)}</p><button class="btn btn-primary" type="button" onclick="retryLoadState()">Tentar novamente</button><button class="btn btn-ghost" type="button" onclick="logout()">Sair da conta</button></section></main>`;
+  app.innerHTML=`<main class="data-state-wrap"><section class="data-state-card" role="alert"><div class="data-state-icon error">!</div><p class="data-state-eyebrow">SINCRONIZAÇÃO INDISPONÍVEL</p><h1>Seus dados ainda não foram carregados</h1><p>Por segurança, a TOPOZ bloqueou a edição para evitar sobrescrever informações salvas.</p><p class="data-state-detail">${esc(detail)}</p><button class="btn btn-primary" type="button" onclick="retryLoadState()">Tentar novamente</button><button class="btn btn-ghost" type="button" onclick="logout()">Sair da conta</button></section></main>`;
 }
 async function retryLoadState(){
   renderDataLoading();
@@ -535,6 +538,11 @@ const ROUTES = [
   {id:'sessoes', label:'Sessões', ic:'⏱️'},
   {id:'duvidas', label:'Dúvidas', ic:'❓'},
   {id:'flashcards', label:'Flashcards', ic:'🧠'},
+  {id:'mapas', label:'Mapas mentais', ic:'🧩'},
+  {id:'pesquisa', label:'Pesquisa acadêmica', ic:'🔎'},
+  {id:'trilhas', label:'Trilhas', ic:'🧭'},
+  {id:'estudio', label:'Estúdio de aulas', ic:'🎓'},
+  {id:'ditado', label:'Ditado & transcrições', ic:'🎙'},
   {id:'questoes', label:'Questões', ic:'📋'},
   {id:'eventos', label:'Provas & Eventos', ic:'🔔'},
   {id:'estatisticas', label:'Estatísticas', ic:'📊'},
@@ -545,7 +553,7 @@ const ROUTES = [
 ];
 const ROUTE_TITLES = Object.fromEntries(ROUTES.map(r=>[r.id, r.label]));
 
-function navigate(route){ ROUTE = route; SIDEBAR_OPEN=false; render(); }
+function navigate(route){ TOPOS_LABS.onNavigate(route); ROUTE = route; SIDEBAR_OPEN=false; render(); }
 
 /* =====================================================================
    RENDER SHELL
@@ -560,7 +568,7 @@ function render(){
   app.innerHTML = `
     ${SIDEBAR_OPEN?'<div class="backdrop-close" onclick="SIDEBAR_OPEN=false;render()"></div>':''}
     <div class="sidebar ${SIDEBAR_OPEN?'open':''}">
-      <div class="brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOS <small class="topos-product-label">ESTUDOS</small></span></div>
+      <div class="brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ <small class="topos-product-label">ESTUDOS</small></span></div>
 
       <div class="nav">
         ${ROUTES.map(r=>`<button class="nav-item ${ROUTE===r.id?'active':''}" onclick="navigate('${r.id}')"><span class="ic">${r.ic}</span>${r.label}</button>`).join('')}
@@ -626,6 +634,11 @@ function renderRoute(){
     case 'sessoes': return viewSessoes();
     case 'duvidas': return viewDuvidas();
     case 'flashcards': return viewFlashcards();
+    case 'mapas': return LAB.viewMapas();
+    case 'pesquisa': return LAB.viewPesquisa();
+    case 'trilhas': return LAB.viewTrilhas();
+    case 'estudio': return LAB.viewEstudio();
+    case 'ditado': return LAB.viewDitado();
     case 'questoes': return viewQuestoes();
     case 'eventos': return viewEventos();
     case 'estatisticas': return viewEstatisticas();
@@ -3522,7 +3535,7 @@ function renderPublicLanding(){
   app.innerHTML=`
     <div class="public-site">
       <header class="public-nav">
-        <a class="public-brand" href="#inicio" aria-label="TOPOS - início"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOS</span></a>
+        <a class="public-brand" href="#inicio" aria-label="TOPOZ - início"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ</span></a>
         <nav class="public-nav-actions" aria-label="Navegação principal"><a href="#recursos">Recursos</a><a href="#como-funciona">Como funciona</a><button class="btn btn-ghost" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button><button class="btn btn-primary" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button></nav>
       </header>
       <main>
@@ -3535,7 +3548,7 @@ function renderPublicLanding(){
         <section class="public-how" id="como-funciona"><div class="public-section-heading"><div class="public-eyebrow">SIMPLES PARA COMEÇAR</div><h2>Transforme intenção em rotina.</h2><p>Comece com o essencial e ajuste a sua central conforme suas necessidades mudam.</p></div><div class="public-steps"><article><span>01</span><h3>Organize</h3><p>Organize matérias, conteúdos e objetivos de estudo.</p></article><article><span>02</span><h3>Pratique</h3><p>Resolva questões, revise flashcards e consolide seu aprendizado.</p></article><article><span>03</span><h3>Acompanhe</h3><p>Acompanhe sessões, metas e desempenho nos estudos.</p></article></div></section>
         <section class="public-cta-section"><div><span class="public-eyebrow">COMECE COM O PRÓXIMO PASSO</span><h2>Seu próximo avanço começa com uma boa rotina.</h2><p>Crie sua conta e organize seus estudos, matérias e revisões.</p></div><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar minha conta <span aria-hidden="true">→</span></button></section>
       </main>
-      <footer class="public-footer"><a class="public-brand" href="#inicio"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOS</span></a><span>Planeje. Execute. Evolua.</span><button type="button" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Acessar minha conta</button></footer>
+      <footer class="public-footer"><a class="public-brand" href="#inicio"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ</span></a><span>Planeje. Execute. Evolua.</span><button type="button" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Acessar minha conta</button></footer>
     </div>`;
 }
 
@@ -3546,7 +3559,7 @@ function renderAuth(){
     <div class="auth-wrap">
       <div class="auth-card">
         <button type="button" class="auth-back-link" onclick="AUTH_VIEW='landing';AUTH_MSG=null;renderPublicLanding()">← Voltar à apresentação</button>
-        <div class="auth-brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOS</span></div>
+        <div class="auth-brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ</span></div>
         <div class="auth-tabs">
           <button class="auth-tab ${AUTH_MODE==='login'?'active':''}" onclick="AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button>
           <button class="auth-tab ${AUTH_MODE==='signup'?'active':''}" onclick="AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button>
@@ -3569,7 +3582,7 @@ function renderPasswordRecovery(){
   const app=document.getElementById('app');
   app.innerHTML=`
     <div class="auth-wrap"><div class="auth-card">
-      <div class="auth-brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOS</span></div>
+      <div class="auth-brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ</span></div>
       <div class="auth-recovery-mark">🔐</div>
       <h1 class="auth-recovery-title">Defina uma nova senha</h1>
       <p class="auth-recovery-copy">Escolha uma senha segura para voltar ao seu espaço de estudos.</p>

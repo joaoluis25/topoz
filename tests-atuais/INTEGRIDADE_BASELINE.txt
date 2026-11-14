@@ -1,0 +1,5 @@
+Arquivos existentes no ZIP original: 64
+Mantidos sem alteração: 61
+Alterados intencionalmente: README.md, estudos-demo.html, index.html
+Novos arquivos: topos-labs.js, topos-labs.css, ENTREGA_BETA_V5_5.md, tests-atuais/test_labs_node.cjs, tests-atuais/INTEGRIDADE_BASELINE.txt.
+Histórico de segurança mantido bit a bit: True

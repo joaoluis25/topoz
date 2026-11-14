@@ -23,3 +23,11 @@ Os dados continuam no banco antigo `study_data` e no Storage privado, como na V5
 `historico-seguranca-v5.4/` contém as evidências e scripts de teste anteriores sem alterações, com hashes conferidos em `HISTORICO-SEGURANCA.md`. O histórico não equivale a homologação real de um novo ambiente. Novos testes ficam em `tests-atuais/`.
 
 **Não use a nova interface com dados sensíveis sem testar os controles do Supabase.**
+
+## Beta V5.5 — laboratórios integrados (14/11/2026)
+
+Esta atualização preserva a aplicação V5.4 de Estudos e acrescenta cinco rotas originais: **Mapas mentais**, **Pesquisa acadêmica**, **Trilhas de aprendizagem**, **Estúdio de aulas** e **Ditado & transcrições**. O nome exibido na interface desta beta é **TOPOZ Estudos**; identificadores legados de código, banco e configurações permanecem como `topos` por compatibilidade.
+
+Os dados dos novos módulos são objetos opcionais em `study_data.data.labs`; o arquivo demo não salva na nuvem e mostra aviso sobre o caráter temporário de suas alterações. Leia `ENTREGA_BETA_V5_5.md` para escopo, limites, licenças, resultados de testes e próximos passos. O diretório `historico-seguranca-v5.4/` não foi modificado.
+
+Testes locais: `node tests-atuais/test_labs_node.cjs` e, com Playwright Python + Chromium disponíveis, `python tests-atuais/test_labs_browser.py`. A integração com Supabase real e testes de RLS dependem de homologação externa.
