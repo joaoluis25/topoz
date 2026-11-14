@@ -2,9 +2,9 @@ from playwright.sync_api import sync_playwright
 from pathlib import Path
 root=Path(__file__).resolve().parent.parent
 html=(root/'estudos-demo.html').read_text(encoding='utf8')
-for sheet in ['style.css','topos-design.css','topos-labs.css']:
+for sheet in ['style.css','topos-design.css','topos-labs.css','topoz-v56.css']:
  html=html.replace(f'<link rel="stylesheet" href="{sheet}">',f'<style>\n{(root/sheet).read_text(encoding="utf8")}\n</style>')
-for script in ['topos-voice.js','topos-labs.js']:
+for script in ['topos-voice.js','topos-labs.js','topoz-guard.js','topoz-v56.js']:
  html=html.replace(f'<script src="{script}"></script>',f'<script>\n{(root/script).read_text(encoding="utf8")}\n</script>')
 with sync_playwright() as p:
  browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])

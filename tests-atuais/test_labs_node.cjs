@@ -13,6 +13,8 @@ const n=LAB.normalize(orig);
 assert.equal(n.maps.length,1);
 assert.equal(n.maps[0].nodes[0].parentId,null,'pai ausente normalizado');
 assert.equal(n.maps[0].nodes[1].parentId,'n1');
+const cyclic=LAB.normalize({maps:[{title:'Ciclo',nodes:[{id:'a',parentId:'b',title:'A'},{id:'b',parentId:'a',title:'B'}]}]});
+assert.ok(cyclic.maps[0].nodes.some(n=>!n.parentId),'ciclo em mapa reparado');
 assert.equal(n.research[0].sources[0].url,'','URL com protocolo inseguro descartada');
 assert.equal(n.lessons[0].body,'Texto preservado');
 assert.equal(n.paths.length,0,'coleção ausente recebe default');

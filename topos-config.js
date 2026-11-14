@@ -1,10 +1,8 @@
-/* TOPOS - configuracao PUBLICA do Supabase para teste da conta existente.
- * Conexao herdada da V4. NAO use esta instancia para testes de migracao ou
- * testes de escrita de novos modulos: prefira um Supabase de homologacao.
- * A chave publishable/anon e publica; NUNCA inclua service_role ou tokens privados.
- * Para alternar ao staging, troque SOMENTE os valores abaixo.
+/* TOPOZ Estudos V5.6 — configuração pública de STAGING, sem chaves no pacote.
+ * PREENCHA SOMENTE APÓS EXECUTAR MIGRAÇÕES, TESTES RLS E BACKUP.
+ * Nunca coloque service_role aqui. Mantenha produção isolada.
  */
-window.TOPOS_PUBLIC_CONFIG = Object.freeze({
-  url: 'https://btyxrzknkygylvnrzsuo.supabase.co',
-  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk'
+window.TOPOS_PUBLIC_CONFIG=Object.freeze({
+  url:'https://SEU-STAGING.supabase.co',
+  anonKey:'SUA_CHAVE_PUBLICAVEL_DE_STAGING'
 });

@@ -14,6 +14,7 @@
 
 <link rel="stylesheet" href="topos-design.css">
 <link rel="stylesheet" href="topos-labs.css">
+<link rel="stylesheet" href="topoz-v56.css">
 
 
 
@@ -35,13 +36,15 @@
 <script src="topos-config.js"></script>
 <script src="topos-voice.js"></script>
 <script src="topos-labs.js"></script>
+<script src="topoz-guard.js"></script>
+<script src="topoz-v56.js"></script>
 <script>
 /* =====================================================================
    CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
    (Project Settings → API, no painel do Supabase)
 ===================================================================== */
-const SUPABASE_URL = window.TOPOS_PUBLIC_CONFIG?.url || 'https://btyxrzknkygylvnrzsuo.supabase.co';
-const SUPABASE_ANON_KEY = window.TOPOS_PUBLIC_CONFIG?.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk';
+const SUPABASE_URL = window.TOPOS_PUBLIC_CONFIG?.url || 'https://configuracao-ausente.invalid';
+const SUPABASE_ANON_KEY = window.TOPOS_PUBLIC_CONFIG?.anonKey || 'configuracao-ausente';
 const SUPABASE_CONFIG_READY = Boolean(window.TOPOS_PUBLIC_CONFIG?.url && window.TOPOS_PUBLIC_CONFIG?.anonKey) &&
   /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL) &&
   !/SEU-PROJETO|SUA_CHAVE|service_role/i.test(SUPABASE_URL+' '+SUPABASE_ANON_KEY);
@@ -63,6 +66,19 @@ let SAVE_VERSION = 0;
 let SAVE_STATUS = 'saved'; // pending | saving | saved | error
 let DATA_READY = false;
 let DATA_LOAD_ERROR = null;
+let DATA_REVISION = 0;
+let SYNC_CONFLICT = false;
+const MAX_STUDY_SNAPSHOT_BYTES = 5*1024*1024;
+const SYNC_CHANNEL = !window.TOPOS_STUDY_STANDALONE && 'BroadcastChannel' in window
+  ? new BroadcastChannel('topoz-estudos-revisions-v56') : null;
+if(SYNC_CHANNEL)SYNC_CHANNEL.onmessage=event=>{
+  const msg=event.data;
+  if(!CURRENT_USER || msg?.userId!==CURRENT_USER.id || !Number.isInteger(msg?.revision))return;
+  if(msg.revision>DATA_REVISION){
+    SYNC_CONFLICT=true;SAVE_STATUS='error';updateSaveStatusUI();
+    toast('Outra aba salvou alterações. Exporte este estado antes de recarregar; salvamento bloqueado.');
+  }
+};
 
 function defaultState(){
   return {
@@ -119,7 +135,9 @@ function normalizeState(raw){
     return colorNames.has(text)||/^[1-4]$/.test(text)||/^#[0-9a-f]{6}$/i.test(text)?text:'amber';
   };
   const topics=arr('topics').map(t=>({id:cleanId(t?.id),name:String(t?.name||'').slice(0,200),parentId:typeof t?.parentId==='string'?t.parentId:null,color:normalizeTopicColor(t?.color),progress:Math.max(0,Math.min(100,Number(t?.progress)||0))})).filter(t=>t.name.trim());
+  const topicSeen=new Set(); topics.forEach(t=>{if(topicSeen.has(t.id)){t.id=uid();t.parentId=null;} topicSeen.add(t.id);});
   const topicIds=new Set(topics.map(t=>t.id)); topics.forEach(t=>{if(t.parentId===t.id||!topicIds.has(t.parentId))t.parentId=null;});
+  TOPOS_GUARD.breakTopicCycles(topics);
   const notes=arr('notes').map(n=>({id:cleanId(n?.id),title:String(n?.title||'').slice(0,300),html:sanitizeNoteHtml(String(n?.html||'')),topicId:topicIds.has(n?.topicId)?n.topicId:null,tags:Array.isArray(n?.tags)?n.tags.slice(0,50).map(x=>String(x).slice(0,80)).filter(Boolean):[],checklist:checklist(n?.checklist),priority:['low','normal','high'].includes(n?.priority)?n.priority:'normal',favorite:!!n?.favorite,notebookDone:!!n?.notebookDone,readDates:Array.isArray(n?.readDates)?[...new Set(n.readDates.map(cleanDate).filter(Boolean))].slice(-365):[],reviewOn:!!n?.reviewOn,nextReview:cleanDate(n?.nextReview),interval:Math.max(0,Math.min(100,Number(n?.interval)||0)),reviewHistory:Array.isArray(n?.reviewHistory)?n.reviewHistory.slice(-500).map(r=>({date:cleanDate(r?.date)||todayISO(),rating:['again','hard','good','easy'].includes(r?.rating)?r.rating:'good',intervalDays:Math.max(1,Math.min(3650,Number(r?.intervalDays)||1)),nextReview:cleanDate(r?.nextReview)})):[],createdAt:cleanTimestamp(n?.createdAt)||new Date().toISOString(),updatedAt:cleanTimestamp(n?.updatedAt)||cleanTimestamp(n?.createdAt)||new Date().toISOString()}));
   const goals=arr('goals').map(g=>{
     const rawStatus=String(g?.status||'andamento').toLowerCase();
@@ -211,8 +229,10 @@ async function loadState(){
   DATA_LOAD_ERROR=null;
   updateSaveStatusUI();
   try{
-    const {data:row,error}=await sb.from('study_data').select('data').eq('user_id',CURRENT_USER.id).maybeSingle();
-    if(error)throw error;
+    const loadUserId=CURRENT_USER.id;
+    const {data:row,error}=await sb.from('study_data').select('data,revision').eq('user_id',loadUserId).maybeSingle();
+    if(error)throw new Error('Leitura revisionada indisponível: execute a migração V5.6 no staging antes de usar contas reais. '+error.message);
+    if(CURRENT_USER?.id!==loadUserId)return false;
     let raw={};
     if(row){
       raw=row.data;
@@ -225,6 +245,7 @@ async function loadState(){
         throw new Error('Não foi possível reconhecer o formato dos dados salvos. Nenhum dado foi sobrescrito.');
       }
     }
+    if(row&&!Number.isInteger(row.revision))throw new Error('Registro sem revisão válida; não foi alterado.');
     const normalized=normalizeState(raw);
     const rawCycles=raw?.settings?.pomodoro?.cycles;
     const repairedLegacyCycle=Array.isArray(rawCycles)&&normalized.settings.pomodoro.cycles.some(cycle=>{
@@ -234,6 +255,7 @@ async function loadState(){
       );
     });
     STATE=normalized;
+    DATA_REVISION=row?.revision||0;SYNC_CONFLICT=false;
     DATA_READY=true;
     DATA_LOAD_ERROR=null;
     updateSaveStatusUI();
@@ -252,32 +274,41 @@ async function loadState(){
 async function persistStateSnapshot(version){
   const userId=CURRENT_USER?.id;
   if(!userId||!DATA_READY||version!==SAVE_VERSION)return false;
-  const snapshot=JSON.parse(JSON.stringify(STATE));
+  if(SYNC_CONFLICT){SAVE_STATUS='error';updateSaveStatusUI();return false;}
+  if(window.TOPOS_STUDY_STANDALONE){
+    // Demonstração intencionalmente volátil; nada é salvo no banco.
+    SAVE_STATUS='saved';updateSaveStatusUI();return true;
+  }
+  const serialized=JSON.stringify(STATE);
+  if(TOPOS_GUARD.byteLength(serialized)>MAX_STUDY_SNAPSHOT_BYTES){
+    SAVE_STATUS='error';updateSaveStatusUI();
+    toast('Dados acima de 5 MB. Exporte um backup e reduza anexos incorporados antes de salvar.');
+    return false;
+  }
+  const snapshot=JSON.parse(serialized);
   const task=async()=>{
-    if(!CURRENT_USER||CURRENT_USER.id!==userId||!DATA_READY||version!==SAVE_VERSION)return false;
-    SAVING=true;
-    SAVE_STATUS='saving';
-    updateSaveStatusUI();
+    if(!CURRENT_USER||CURRENT_USER.id!==userId||!DATA_READY||version!==SAVE_VERSION||SYNC_CONFLICT)return false;
+    SAVING=true;SAVE_STATUS='saving';updateSaveStatusUI();
     try{
-      const {error}=await sb.from('study_data').upsert({
-        user_id:userId,
-        data:snapshot,
-        updated_at:new Date().toISOString()
-      },{onConflict:'user_id'});
+      const expected=DATA_REVISION;
+      const {data,error}=await sb.rpc('save_study_data_v56',{p_data:snapshot,p_expected_revision:expected});
       if(error)throw error;
+      if(!Number.isInteger(data)||data!==expected+1)throw Error('Resposta de versão inesperada. Atualização bloqueada.');
+      DATA_REVISION=data;
+      SYNC_CHANNEL?.postMessage({userId,revision:data});
       if(version===SAVE_VERSION)SAVE_STATUS='saved';
       return true;
     }catch(e){
-      console.error('Erro ao salvar no Supabase',e);
-      if(version===SAVE_VERSION){
-        SAVE_STATUS='error';
-        toast('Não foi possível sincronizar. Seus dados continuam nesta tela; tente salvar novamente.');
+      if(/REVISION_CONFLICT|23505|conflito|vers[aã]o/i.test(e.message||'')){
+        SYNC_CONFLICT=true;
+        toast('Conflito de edição: dados remotos atualizados. Exporte este estado e recarregue antes de continuar.');
+      }else{
+        console.error('Falha de persistência V5.6:',e?.code||'unknown');
+        toast('Não foi possível sincronizar. O conteúdo desta tela ainda não foi descartado.');
       }
+      if(version===SAVE_VERSION)SAVE_STATUS='error';
       return false;
-    }finally{
-      SAVING=false;
-      updateSaveStatusUI();
-    }
+    }finally{SAVING=false;updateSaveStatusUI();}
   };
   const queued=SAVE_CHAIN.catch(()=>false).then(task);
   SAVE_CHAIN=queued.catch(()=>false);
@@ -304,18 +335,19 @@ async function saveStateNow(){
 }
 async function retrySaveState(){
   if(SAVE_STATUS!=='error')return;
+  if(SYNC_CONFLICT){toast('Conflito detectado. Exporte o backup local e recarregue a página; não é seguro sobrescrever.');return;}
   const ok=await saveStateNow();
   if(ok)toast('Dados sincronizados com sucesso.');
 }
 function saveStatusMarkup(){
-  const labels={pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
+  const labels=window.TOPOS_STUDY_STANDALONE?{pending:'Demo sem salvamento',saving:'Demo sem salvamento',saved:'Demo sem salvamento',error:'Demo sem salvamento'}:{pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
   const icons={pending:'●',saving:'↻',saved:'✓',error:'!'};
   return `<button type="button" id="saveStatusIndicator" class="sync-status is-${SAVE_STATUS}" onclick="retrySaveState()" ${SAVE_STATUS==='error'?'':'disabled'} aria-live="polite" title="${SAVE_STATUS==='error'?'Clique para tentar salvar novamente':'Status da sincronização'}"><span class="sync-status-icon" aria-hidden="true">${icons[SAVE_STATUS]||'✓'}</span><span>${labels[SAVE_STATUS]||labels.saved}</span></button>`;
 }
 function updateSaveStatusUI(){
   const el=document.getElementById('saveStatusIndicator');
   if(!el)return;
-  const labels={pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
+  const labels=window.TOPOS_STUDY_STANDALONE?{pending:'Demo sem salvamento',saving:'Demo sem salvamento',saved:'Demo sem salvamento',error:'Demo sem salvamento'}:{pending:'Alterações pendentes',saving:'Salvando…',saved:'Tudo salvo',error:'Falha na sincronização'};
   const icons={pending:'●',saving:'↻',saved:'✓',error:'!'};
   el.className=`sync-status is-${SAVE_STATUS}`;
   el.innerHTML=`<span class="sync-status-icon" aria-hidden="true">${icons[SAVE_STATUS]||'✓'}</span><span>${labels[SAVE_STATUS]||labels.saved}</span>`;
@@ -369,11 +401,9 @@ function sanitizeNoteHtml(html){
     });
     return limitEditorFontStyles(sanitized);
   }
-  const t=document.createElement('template');t.innerHTML=String(html||'');t.content.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link,svg,math,template').forEach(el=>el.remove());const tags=new Set(['B','STRONG','I','EM','U','S','BR','P','DIV','SPAN','UL','OL','LI','BLOCKQUOTE','PRE','CODE','HR','A','IMG','H1','H2','H3','H4','SUB','SUP']);const attrs={A:new Set(['href','target','rel','title']),IMG:new Set(['src','alt','title','width','height']),SPAN:new Set(['style']),P:new Set(['style']),DIV:new Set(['style']),BLOCKQUOTE:new Set(['style'])};const w=document.createTreeWalker(t.content,NodeFilter.SHOW_ELEMENT),nodes=[];while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(el=>{if(!tags.has(el.tagName)){el.replaceWith(...Array.from(el.childNodes));return;}[...el.attributes].forEach(a=>{const n=a.name.toLowerCase();if(n.startsWith('on')||!attrs[el.tagName]?.has(n)){el.removeAttribute(a.name);return;}if(n==='style'){const validSize=el.tagName==='SPAN'&&/^font-size:\s*(?:12|14|16|18|20|22|24|28|32)px;?$/i.test(a.value.trim());const validAlign=['P','DIV','BLOCKQUOTE'].includes(el.tagName)&&/^text-align:\s*(?:left|center|right|justify);?$/i.test(a.value.trim());if(!validSize&&!validAlign)el.removeAttribute(a.name);return;}if(n==='href'||n==='src'){
-const raw=String(a.value||'').trim();
-if(n==='src' && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(raw) && raw.length<=1400000){el.setAttribute(a.name,raw);return;}
-try{const u=new URL(raw,document.baseURI);if(!['http:','https:','mailto:'].includes(u.protocol))el.removeAttribute(a.name);else el.setAttribute(a.name,u.href);}catch{el.removeAttribute(a.name);}
-}});if(el.tagName==='A'){el.setAttribute('target','_blank');el.setAttribute('rel','noopener noreferrer nofollow');}});return limitEditorFontStyles(t.innerHTML);}
+  // Sem DOMPurify: renderizar somente texto. Não tentar sanitizador caseiro permissivo.
+  return esc(source);
+}
 function limitEditorFontStyles(markup){
  const root=document.createElement('template');root.innerHTML=markup;
  root.content.querySelectorAll('[style]').forEach(el=>{
@@ -531,6 +561,8 @@ const ROUTES = [
   {id:'dashboard', label:'Dashboard', ic:'🏠'},
   {id:'calendario', label:'Calendário', ic:'📅'},
   {id:'meudia', label:'Meu Dia', ic:'🕐'},
+  {id:'fila', label:'Fila de revisão', ic:'📌'},
+  {id:'planejador', label:'Planejamento inteligente', ic:'🧮'},
   {id:'anotacoes', label:'Anotações', ic:'📝'},
   {id:'conteudos', label:'Matérias e materiais', ic:'📚'},
   {id:'metas', label:'Metas', ic:'🎯'},
@@ -570,9 +602,9 @@ function render(){
     <div class="sidebar ${SIDEBAR_OPEN?'open':''}">
       <div class="brand"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ <small class="topos-product-label">ESTUDOS</small></span></div>
 
-      <div class="nav">
+      <nav class="nav" aria-label="Navegação de estudos">
         ${ROUTES.map(r=>`<button class="nav-item ${ROUTE===r.id?'active':''}" onclick="navigate('${r.id}')"><span class="ic">${r.ic}</span>${r.label}</button>`).join('')}
-      </div>
+      </nav>
       <div class="sidebar-foot">
         <div class="sidebar-timer" onclick="navigate('sessoes')" title="Abrir sessões e controlar o timer">
           <div class="sidebar-timer-top">
@@ -610,7 +642,7 @@ function render(){
           <button class="search-btn" onclick="openSearch()" aria-label="Buscar em tudo"><span class="search-btn-icon" aria-hidden="true">🔍</span><span class="search-btn-text">Buscar em tudo...</span><kbd>/</kbd></button>
         </div>
       </div>
-      <div class="content" id="content"></div>
+      <main class="content" id="content" tabindex="-1"></main>
     </div>
   `;
   const content = document.getElementById('content');
@@ -627,6 +659,8 @@ function renderRoute(){
     case 'dashboard': return viewDashboard();
     case 'calendario': return viewCalendario();
     case 'meudia': return viewMeuDia();
+    case 'fila': return TOPOZ_V56.viewFila(STATE);
+    case 'planejador': return TOPOZ_V56.viewPlano(STATE);
     case 'anotacoes': return viewAnotacoes();
     case 'conteudos': return viewConteudos();
     case 'metas': return viewMetas();
@@ -652,6 +686,7 @@ function renderRoute(){
 function afterRender(){
   // hooks per-route after DOM injected
   if(ROUTE==='sessoes') refreshTimerDisplay();
+  TOPOZ_V56.afterRender(STATE,DATA_READY,ROUTE);
 }
 
 /* =====================================================================
@@ -918,6 +953,9 @@ async function uploadStudyPDF(input){
   if(!DATA_READY||!CURRENT_USER){toast('Faça login antes de enviar arquivos.');return;}
   if(!topicId||!STATE.topics.some(t=>t.id===topicId)){toast('Selecione a matéria do PDF antes de enviar.');return;}
   if(file.size<5||file.size>MAX_PDF_BYTES||!file.name.toLowerCase().endsWith('.pdf')){toast('Escolha um PDF válido de até 15 MB.');return;}
+  if((STATE.materials||[]).length>=50 || (STATE.materials||[]).reduce((sum,m)=>sum+(Number(m.size)||0),0)+file.size>300*1024*1024){
+    toast('Limite da biblioteca: 50 PDFs ou 300 MB por conta.');return;
+  }
   const header=new Uint8Array(await file.slice(0,5).arrayBuffer());
   if(String.fromCharCode(...header)!=='%PDF-'){toast('O arquivo não possui assinatura PDF válida.');return;}
   const id=uid();const path=`${CURRENT_USER.id}/${topicId}/${id}.pdf`;
@@ -927,7 +965,15 @@ async function uploadStudyPDF(input){
     if(error)throw error;
     STATE.materials=STATE.materials||[];
     STATE.materials.push({id,topicId,name:file.name.slice(0,180),path,size:file.size,createdAt:new Date().toISOString()});
-    saveState();render();toast('PDF enviado para sua matéria!');
+    const saved=await saveStateNow();
+    if(!saved){
+      // Compensação para evitar criar um PDF órfão quando a referência no banco falha.
+      STATE.materials=STATE.materials.filter(m=>m.id!==id);
+      const cleanup=await sb.storage.from(PDF_BUCKET).remove([path]);
+      if(cleanup.error)console.warn('Remoção compensatória de PDF falhou; investigar objeto órfão.');
+      throw new Error('Metadados não foram sincronizados; envio revertido');
+    }
+    render();toast('PDF enviado para sua matéria!');
   }catch(e){console.error('Falha ao enviar PDF',e);announce('Envio não concluído. Verifique se o bucket privado study-materials e as políticas SQL estão configurados.');toast('Não foi possível enviar o PDF.');}
 }
 async function openStudyPDF(id,download){
@@ -3108,8 +3154,31 @@ function viewHistorico(){
 /* =====================================================================
    CONFIGURAÇÕES
 ===================================================================== */
-function viewAssistenteIA(){return `<div class="card" style="max-width:850px"><div class="section-title">✦ Assistente de estudos com IA</div><p class="review-help">Resuma conteúdos, solicite explicações simples ou crie perguntas para praticar. A integração precisa de uma função de servidor configurada em seu Supabase; nenhuma chave de IA é exposta no navegador.</p><div class="field"><label for="aiSource">Conteúdo para estudar</label><textarea id="aiSource" rows="9" maxlength="12000" placeholder="Cole seu material ou trecho de anotação..."></textarea></div><div class="field"><label for="aiTask">O que deseja fazer?</label><select id="aiTask"><option value="resumo">Resumo organizado</option><option value="explicacao">Explicação passo a passo</option><option value="questoes">Perguntas de revisão</option><option value="organizar">Organizar ideias sem mudar o sentido</option><option value="revisar">Revisar clareza e gramática</option></select></div><button class="btn btn-primary" onclick="runStudyAI()" id="aiSubmit">✦ Gerar com IA</button><p class="review-help">Revise as informações geradas antes de usá-las para estudar. Não insira senhas, documentos pessoais ou dados sensíveis.</p><div id="aiResult" class="ai-result" role="status" aria-live="polite"></div></div>`;}
-async function runStudyAI(){const input=document.getElementById('aiSource')?.value.trim(),task=document.getElementById('aiTask')?.value,result=document.getElementById('aiResult'),button=document.getElementById('aiSubmit');if(!input||input.length<20){toast('Insira ao menos 20 caracteres');return;}if(!CURRENT_USER){toast('Entre na sua conta');return;}button.disabled=true;button.textContent='Gerando...';result.textContent='Consultando o assistente...';try{const {data,error}=await sb.functions.invoke('study-ai',{body:{task,text:input.slice(0,12000)}});if(error)throw error;if(!data||typeof data.result!=='string')throw Error('Resposta inválida do servidor');result.textContent=data.result;}catch(e){console.warn('Assistente IA indisponível',e);result.textContent='A IA ainda não está configurada neste projeto. Publique a Edge Function study-ai e configure a chave no servidor conforme o guia do pacote.';}finally{button.disabled=false;button.textContent='✦ Gerar com IA';}}
+let TOPOS_AI_DRAFT=null;
+function viewAssistenteIA(){return `<div class="card" style="max-width:850px"><div class="section-title">✦ Assistente de estudos · revisão humana</div><p class="review-help">Gere um rascunho a partir de material fornecido. A IA pode errar. Nenhum texto vira anotação sem sua aprovação explícita. Limite de até 20 solicitações diárias por usuário, controlado no servidor.</p><div class="field"><label for="aiSource">Conteúdo para estudar</label><textarea id="aiSource" rows="9" maxlength="12000" placeholder="Cole seu material ou trecho de anotação..."></textarea></div><div class="field"><label for="aiTask">O que deseja fazer?</label><select id="aiTask"><option value="resumo">Resumo organizado</option><option value="explicacao">Explicação passo a passo</option><option value="questoes">Perguntas de revisão</option><option value="organizar">Organizar ideias sem mudar o sentido</option><option value="revisar">Revisar clareza e gramática</option></select></div><button class="btn btn-primary" onclick="runStudyAI()" id="aiSubmit">✦ Gerar rascunho</button><p class="review-help">Somente o texto enviado é processado pelo provedor configurado. Não cole senhas ou dados pessoais. As respostas não são fontes verificadas; RAG e citações rastreáveis exigem módulo posterior.</p><div id="aiResult" class="ai-result" role="status" aria-live="polite"></div><button id="aiApprove" type="button" class="btn btn-primary" hidden onclick="approveStudyAIDraft()">✓ Aprovar e salvar como anotação</button></div>`;}
+async function runStudyAI(){
+ const input=document.getElementById('aiSource')?.value.trim(),task=document.getElementById('aiTask')?.value;
+ const result=document.getElementById('aiResult'),button=document.getElementById('aiSubmit'),approve=document.getElementById('aiApprove');
+ if(!input||input.length<20){toast('Insira ao menos 20 caracteres');return;}
+ if(!CURRENT_USER||window.TOPOS_STUDY_STANDALONE){toast('IA indisponível na demonstração. Entre na sua conta de homologação.');return;}
+ TOPOS_AI_DRAFT=null;approve.hidden=true;button.disabled=true;button.textContent='Gerando...';result.textContent='Consultando o assistente...';
+ try{
+  const {data,error}=await sb.functions.invoke('study-ai',{body:{task,text:input.slice(0,12000)}});
+  if(error)throw error;
+  if(!data||typeof data.result!=='string'||typeof data.draft?.title!=='string')throw Error('Resposta inválida do servidor');
+  TOPOS_AI_DRAFT={title:data.draft.title.slice(0,200),body:data.result.slice(0,16000)};
+  result.textContent=data.result+'\n\n'+(data.cached?'(Resposta recuperada do cache desta conta)':'(Rascunho novo)');
+  approve.hidden=false;
+ }catch(e){console.warn('Assistente IA indisponível:',e?.message||'erro');result.textContent='Não foi possível gerar o rascunho. Verifique a função study-ai, migração e cota diária em seu ambiente de homologação.';}
+ finally{button.disabled=false;button.textContent='✦ Gerar rascunho';}
+}
+function approveStudyAIDraft(){
+ if(!TOPOS_AI_DRAFT||!DATA_READY)return;
+ if(!confirm('Você revisou o conteúdo e deseja salvá-lo como anotação?'))return;
+ const draft=TOPOS_AI_DRAFT,stamp=new Date().toISOString();
+ STATE.notes.push({id:uid(),title:draft.title||'Rascunho assistido',html:'<p>'+esc(draft.body).replace(/\n/g,'<br>')+'</p>',topicId:null,tags:['ia-revisada'],priority:'normal',favorite:false,reviewOn:false,nextReview:null,interval:0,createdAt:stamp,updatedAt:stamp});
+ TOPOS_AI_DRAFT=null;saveState();navigate('anotacoes');toast('Rascunho aprovado e salvo; confira a sincronização.');
+}
 function viewConfig(){
   const s=STATE.settings, p=s.pomodoro;
   return `
@@ -3328,7 +3397,7 @@ function exportJSON(){
 async function importJSON(file){
   if(!file)return;
   if(!DATA_READY){toast('Carregue os dados da conta antes de importar.');return;}
-  if(file.size>20*1024*1024){toast('O backup ultrapassa o limite de 20 MB.');return;}
+  if(file.size>5*1024*1024){toast('A importação V5.6 está limitada a 5 MB; preserve o backup original.');return;}
   try{
     const text=await file.text();
     const parsed=JSON.parse(text);
@@ -3346,6 +3415,8 @@ async function importJSON(file){
     }
     if(!confirm('Importar este backup substituirá os dados atuais. Exporte um backup recente antes de continuar. Deseja prosseguir?'))return;
     const nextState=normalizeState({...parsed,schemaVersion:4});
+    const verified=TOPOS_GUARD.validateStudySnapshot(nextState);
+    if(!verified.ok)throw new Error(verified.reason);
     STATE=nextState;
     render();
     const saved=await saveStateNow();
@@ -3358,7 +3429,7 @@ async function importJSON(file){
 }
 async function resetAll(){
   if(!DATA_READY){toast('Carregue os dados da conta antes de continuar.');return;}
-  if(!confirm('Isso vai apagar TODOS os seus dados permanentemente. Exporte um backup antes de continuar. Tem certeza?'))return;
+  if(!confirm('Isso redefine o seu estado de estudos no banco, mas NÃO exclui a conta, rascunhos remotos ou PDFs físicos do Storage. Para exclusão integral/LGPD é necessário procedimento administrativo auditado. Exporte um backup. Deseja redefinir os estudos?'))return;
   if(!confirm('Última confirmação: apagar todos os dados dessa conta mesmo?'))return;
   STATE=defaultState();
   render();
@@ -3688,8 +3759,21 @@ async function logout(){
 /* =====================================================================
    INIT
 ===================================================================== */
+function clearLocalPrivateState(userId){
+  if(!userId)return;
+  clearTimeout(DRAFT_TIMEOUT);clearTimeout(DRAFT_CLOUD_TIMER);
+  if(TIMER.intervalId)clearInterval(TIMER.intervalId);
+  try{
+    for(let i=localStorage.length-1;i>=0;i--){
+      const key=localStorage.key(i)||'';
+      if(key.startsWith('ce-draft-'+userId+'-')||key==='central-estudos-timer-v1:'+userId)localStorage.removeItem(key);
+    }
+  }catch(e){console.warn('Dados locais privados podem precisar de limpeza manual após erro de armazenamento.');}
+  ACTIVE_DRAFT_KEY=null;TOPOS_AI_DRAFT=null;TOPOS_V56.resetPreview();
+}
 async function bootAuthenticated(user){
   if(CURRENT_USER&&CURRENT_USER.id!==user.id){
+    clearLocalPrivateState(CURRENT_USER.id);
     clearTimeout(SAVE_TIMER);clearInterval(TIMER.intervalId);DATA_READY=false;SAVE_STATUS='saved';
   }
   CURRENT_USER=user;
@@ -3726,6 +3810,8 @@ async function bootAuthenticated(user){
       queueMicrotask(()=>bootAuthenticated(session.user));
     }
     if(event==='SIGNED_OUT'){
+      clearLocalPrivateState(CURRENT_USER?.id);
+      DATA_REVISION=0;SYNC_CONFLICT=false;
       clearTimeout(SAVE_TIMER);clearInterval(TIMER.intervalId);
       CURRENT_USER=null;DATA_READY=false;DATA_LOAD_ERROR=null;
       STATE=defaultState();SAVE_STATUS='saved';SAVING=false;SAVE_VERSION++;

@@ -12,7 +12,7 @@ const attr=html;
 const now=()=>new Date().toISOString();
 const safeUrl=v=>{try{const u=new URL(String(v));return ['http:','https:'].includes(u.protocol)?u.toString().slice(0,1500):''}catch{return ''}};
 const arr=(a,max=100)=>Array.isArray(a)?a.slice(0,max):[];
-const normNodes=(raw)=>{const nodes=arr(raw,250).map((v,i)=>({id:cleanId(v?.id),parentId:typeof v?.parentId==='string'?v.parentId:null,title:maxText(v?.title,160).trim()||`Ideia ${i+1}`,detail:maxText(v?.detail,1800)}));const ids=new Set(nodes.map(n=>n.id));for(const n of nodes){if(n.parentId===n.id||!ids.has(n.parentId))n.parentId=null;}return nodes};
+const normNodes=(raw)=>{const nodes=arr(raw,250).map((v,i)=>({id:cleanId(v?.id),parentId:typeof v?.parentId==='string'?v.parentId:null,title:maxText(v?.title,160).trim()||`Ideia ${i+1}`,detail:maxText(v?.detail,1800)}));const seen=new Set();for(const n of nodes){if(seen.has(n.id)){n.id=makeId();n.parentId=null;}seen.add(n.id)}const ids=new Set(nodes.map(n=>n.id));for(const n of nodes){if(n.parentId===n.id||!ids.has(n.parentId))n.parentId=null;}const lookup=new Map(nodes.map(n=>[n.id,n]));for(const n of nodes){let cur=n;const chain=new Set();while(cur?.parentId){if(chain.has(cur.id)){cur.parentId=null;break;}chain.add(cur.id);cur=lookup.get(cur.parentId);}}return nodes};
 const normalize=raw=>{
  const d=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{};
  return {

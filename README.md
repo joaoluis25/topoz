@@ -31,3 +31,11 @@ Esta atualização preserva a aplicação V5.4 de Estudos e acrescenta cinco rot
 Os dados dos novos módulos são objetos opcionais em `study_data.data.labs`; o arquivo demo não salva na nuvem e mostra aviso sobre o caráter temporário de suas alterações. Leia `ENTREGA_BETA_V5_5.md` para escopo, limites, licenças, resultados de testes e próximos passos. O diretório `historico-seguranca-v5.4/` não foi modificado.
 
 Testes locais: `node tests-atuais/test_labs_node.cjs` e, com Playwright Python + Chromium disponíveis, `python tests-atuais/test_labs_browser.py`. A integração com Supabase real e testes de RLS dependem de homologação externa.
+
+## Beta V5.6 — segurança, fila e planejamento (14/11/2026)
+
+Nova versão incremental, em **staging por padrão**: `topos-config.js` usa placeholders (sem dados reais ou tokens). Mantenha `schemaVersion 4`; arquivos SQL de `migrations/v56/` não foram aplicados a nenhum banco. Antes de login real, faça backup, execute migrations em staging, teste isolamento A/B/anon e configure somente a chave pública de staging. Não configure segredo `service_role` no navegador.
+
+Para abrir a demonstração offline, use `estudos-demo.html`. Para descobrir o escopo e pendências, **leia `STATUS-IMPLEMENTACAO.md` e `MIGRACOES.md`**. Os novos menus são `Fila de revisão` e `Planejamento inteligente` (planejador de regras locais; não é geração IA). A IA exige Edge Function, chave de provedor e ambiente homologado e não está habilitada neste pacote.
+
+Testes: `node tests-atuais/test_v56_node.cjs`, `python tests-atuais/test_v56_browser.py` e suites da V5.5 em `tests-atuais/`. Mais detalhes em `RELATORIO-ENTREGA.md`.
