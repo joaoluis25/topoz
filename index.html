@@ -34,6 +34,7 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="topos-config.js"></script>
+<script src="topoz-connection.js"></script>
 <script src="topos-voice.js"></script>
 <script src="topos-labs.js"></script>
 <script src="topoz-guard.js"></script>
@@ -43,11 +44,10 @@
    CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
    (Project Settings → API, no painel do Supabase)
 ===================================================================== */
-const SUPABASE_URL = window.TOPOS_PUBLIC_CONFIG?.url || 'https://btyxrzknkygylvnrzsuo.supabase.co';
-const SUPABASE_ANON_KEY = window.TOPOS_PUBLIC_CONFIG?.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk';
-const SUPABASE_CONFIG_READY = Boolean(window.TOPOS_PUBLIC_CONFIG?.url && window.TOPOS_PUBLIC_CONFIG?.anonKey) &&
-  /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL) &&
-  !/SEU-PROJETO|SUA_CHAVE|service_role/i.test(SUPABASE_URL+' '+SUPABASE_ANON_KEY);
+const SUPABASE_CONFIG_STATUS = (window.TOPOS_CONNECTION?.check?.() || {ready:false,code:'validator_missing',message:'O arquivo topoz-connection.js não foi carregado. Verifique a pasta da aplicação.',url:'',anonKey:''});
+const SUPABASE_URL = SUPABASE_CONFIG_STATUS.url || 'https://configuracao-ausente.invalid';
+const SUPABASE_ANON_KEY = SUPABASE_CONFIG_STATUS.anonKey || 'configuracao-ausente';
+const SUPABASE_CONFIG_READY = SUPABASE_CONFIG_STATUS.ready;
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let CURRENT_USER = null;
 </script>
@@ -3684,7 +3684,7 @@ async function handleAuthSubmit(e){
   const email = document.getElementById('authEmail').value.trim();
   AUTH_EMAIL_DRAFT=email;
   const password = document.getElementById('authPassword').value;
-  if(!SUPABASE_CONFIG_READY){AUTH_MSG={type:'error',text:'Esta instalação não está conectada ao Supabase. Verifique o arquivo topos-config.js.'};renderAuth();return false;}
+  if(!SUPABASE_CONFIG_READY){AUTH_MSG={type:'error',text:SUPABASE_CONFIG_STATUS.message};renderAuth();return false;}
   if(AUTH_MODE==='signup'&&password.length<8){AUTH_MSG={type:'error',text:'Use uma senha com pelo menos 8 caracteres.'};renderAuth();return false;}
   const btn = document.getElementById('authSubmitBtn');
   const APP_URL = APP_REDIRECT_URL();
@@ -3734,7 +3734,7 @@ async function handleForgotPassword(){
 function translateAuthError(msg){
   const detail=String(msg||'');
   const lower=detail.toLowerCase();
-  if(!SUPABASE_CONFIG_READY)return 'Esta instalação não está conectada ao Supabase. Confira o arquivo topos-config.js.';
+  if(!SUPABASE_CONFIG_READY)return SUPABASE_CONFIG_STATUS.message;
   if(lower.includes('invalid login credentials')) return 'E-mail ou senha incorretos. Se sua conta era da V4, confirme que este site está conectado ao mesmo projeto Supabase.';
   if(lower.includes('user already registered')) return 'Já existe uma conta com este e-mail. Use a opção Entrar.';
   if(lower.includes('password should be')||lower.includes('password is too short'))return 'A senha não atende ao tamanho mínimo exigido.';
@@ -3788,7 +3788,7 @@ async function bootAuthenticated(user){
 }
 (async function init(){
   try{
-    if(!SUPABASE_CONFIG_READY)throw new Error('Configuração do Supabase ausente ou inválida. Confira topos-config.js.');
+    if(!SUPABASE_CONFIG_READY)throw new Error(SUPABASE_CONFIG_STATUS.message);
     const {data:{session},error}=await sb.auth.getSession();
     if(error)throw error;
     if(PASSWORD_RECOVERY_MODE)renderPasswordRecovery();else if(session?.user)await bootAuthenticated(session.user);
@@ -3796,7 +3796,7 @@ async function bootAuthenticated(user){
     else renderPublicLanding();
   }catch(e){
     console.error('Falha ao iniciar autenticação',e);
-    AUTH_MSG={type:'error',text:!SUPABASE_CONFIG_READY?'Configuração do Supabase ausente ou inválida. Confira o arquivo topos-config.js.':'Não foi possível iniciar a sessão. Confira a conexão e o projeto Supabase e tente novamente.'};
+    AUTH_MSG={type:'error',text:!SUPABASE_CONFIG_READY?SUPABASE_CONFIG_STATUS.message:'Não foi possível iniciar a sessão. Confira a conexão e o projeto Supabase e tente novamente.'};
     renderAuth();
   }
   sb.auth.onAuthStateChange((event,session)=>{
