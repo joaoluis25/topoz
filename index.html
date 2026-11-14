@@ -43,8 +43,8 @@
    CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
    (Project Settings → API, no painel do Supabase)
 ===================================================================== */
-const SUPABASE_URL = window.TOPOS_PUBLIC_CONFIG?.url || 'https://configuracao-ausente.invalid';
-const SUPABASE_ANON_KEY = window.TOPOS_PUBLIC_CONFIG?.anonKey || 'configuracao-ausente';
+const SUPABASE_URL = window.TOPOS_PUBLIC_CONFIG?.url || 'https://btyxrzknkygylvnrzsuo.supabase.co';
+const SUPABASE_ANON_KEY = window.TOPOS_PUBLIC_CONFIG?.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk';
 const SUPABASE_CONFIG_READY = Boolean(window.TOPOS_PUBLIC_CONFIG?.url && window.TOPOS_PUBLIC_CONFIG?.anonKey) &&
   /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL) &&
   !/SEU-PROJETO|SUA_CHAVE|service_role/i.test(SUPABASE_URL+' '+SUPABASE_ANON_KEY);
