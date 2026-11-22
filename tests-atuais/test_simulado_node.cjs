@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict');
+const {buildSimulado}=require('../topoz-simulado.js');
+const st={topics:[{id:'p',parentId:null,name:'Português'},{id:'s',parentId:'p',name:'Sintaxe'},{id:'m',parentId:null,name:'Matemática'}],questions:[]};
+for(let i=0;i<20;i++)st.questions.push({id:'q'+i,topicId:i%2?'s':'m',type:'objetiva',correct:'A',options:{A:'a',B:'b',C:'c',D:'d',E:'e'}});
+const a=buildSimulado(st,{count:8,seed:42});
+assert.equal(a.questionIds.length,8);
+assert.deepEqual(a.questionIds,buildSimulado(st,{count:8,seed:42}).questionIds);
+assert.equal(new Set(a.questionIds).size,8);
+assert.equal(buildSimulado(st,{count:40,seed:2}).missing,20);
+assert.equal(buildSimulado(st,{topicId:'p',count:20,seed:2}).questionIds.length,10);
+assert.equal(buildSimulado(st,{topicId:'m',count:20,seed:2}).questionIds.length,10);
+console.log('Simulados: 6/6 testes de seleção aprovados');

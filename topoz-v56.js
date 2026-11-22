@@ -11,8 +11,8 @@
  const due=(date,today)=>!!date && date<=today;
  function makeQueue(state,today=localISO(new Date())){
    const topics=new Map((state.topics||[]).map(t=>[t.id,t.name]));
-   const cards=(state.flashcards||[]).filter(f=>due(f.nextReview,today)).map(f=>({type:'flashcard',id:f.id,title:f.front||'Cartão sem título',topic:topics.get(f.topicId)||'Sem matéria',date:f.nextReview}));
-   const notes=(state.notes||[]).filter(n=>n.reviewOn&&due(n.nextReview,today)).map(n=>({type:'note',id:n.id,title:n.title||'Anotação sem título',topic:topics.get(n.topicId)||'Sem matéria',date:n.nextReview}));
+   const cards=(state.flashcards||[]).filter(f=>due(f.nextReview,today)).map(f=>({type:'flashcard',id:f.id,title:f.front||'Cartão sem título',topicId:f.topicId||null,topic:topics.get(f.topicId)||'Sem matéria',date:f.nextReview}));
+   const notes=(state.notes||[]).filter(n=>n.reviewOn&&due(n.nextReview,today)).map(n=>({type:'note',id:n.id,title:n.title||'Anotação sem título',topicId:n.topicId||null,topic:topics.get(n.topicId)||'Sem matéria',date:n.nextReview}));
    return [...cards,...notes].sort((a,b)=>(a.date||'').localeCompare(b.date||'')||a.title.localeCompare(b.title,'pt-BR')).slice(0,5000);
  }
  function planStudy(state,minutes=45,days=7,start=new Date()){
@@ -23,7 +23,7 @@
    const queue=makeQueue(state,localISO(start));
    const weights=new Map(all.map(t=>[t.id,1]));
    for(const q of queue){
-     const t=all.find(t=>t.name===q.topic);if(t)weights.set(t.id,(weights.get(t.id)||0)+3);
+     if(q.topicId&&weights.has(q.topicId))weights.set(q.topicId,(weights.get(q.topicId)||0)+3);
    }
    for(const goal of state.goals||[]){
      if(goal.status!=='concluida' && weights.has(goal.topicId))weights.set(goal.topicId,(weights.get(goal.topicId)||0)+2);

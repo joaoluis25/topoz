@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="topos-design.css">
 <link rel="stylesheet" href="topos-labs.css">
 <link rel="stylesheet" href="topoz-v56.css">
+<link rel="stylesheet" href="topoz-next.css">
 
 
 
@@ -39,14 +40,19 @@
 <script src="topos-labs.js"></script>
 <script src="topoz-guard.js"></script>
 <script src="topoz-v56.js"></script>
+<script src="topoz-calc-engine.js"></script>
+<script src="topoz-calc-ui.js"></script>
+<script src="topoz-export-kit.js"></script>
+<script src="topoz-next.js"></script>
+<script src="topoz-simulado.js"></script>
 <script>
 /* =====================================================================
    CONFIGURAÇÃO DO SUPABASE — troque pelos valores do SEU projeto
    (Project Settings → API, no painel do Supabase)
 ===================================================================== */
 const SUPABASE_CONFIG_STATUS = (window.TOPOS_CONNECTION?.check?.() || {ready:false,code:'validator_missing',message:'O arquivo topoz-connection.js não foi carregado. Verifique a pasta da aplicação.',url:'',anonKey:''});
-const SUPABASE_URL = SUPABASE_CONFIG_STATUS.url || 'https://btyxrzknkygylvnrzsuo.supabase.co';
-const SUPABASE_ANON_KEY = SUPABASE_CONFIG_STATUS.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ0eXhyemtua3lneWx2bnJ6c3VvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1NDk4NzgsImV4cCI6MjEwNDEyNTg3OH0.aJwjeWU16xe5909SodLvkhhjUu8FiVbiNZvNE65jSlk';
+const SUPABASE_URL = SUPABASE_CONFIG_STATUS.url || 'https://configuracao-ausente.invalid';
+const SUPABASE_ANON_KEY = SUPABASE_CONFIG_STATUS.anonKey || 'configuracao-ausente';
 const SUPABASE_CONFIG_READY = SUPABASE_CONFIG_STATUS.ready;
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let CURRENT_USER = null;
@@ -92,6 +98,7 @@ function defaultState(){
     doubts: [],
     questions: [],
     flashcards: [],
+    simulados: [],
     labs: TOPOS_LABS.normalize({}),
     settings: {
       terms:{area:'Área', sub:'Tópico'},
@@ -176,7 +183,7 @@ function normalizeState(raw){
     const legacyAnswer=String(x?.answer||'').slice(0,8000);
     const qHtml=sanitizeNoteHtml(String(x?.questionHtml||'').trim() || `<p>${esc(legacyQuestion)}</p>`);
     const aHtml=sanitizeNoteHtml(String(x?.answerHtml||'').trim() || (legacyAnswer.trim()?`<p>${esc(legacyAnswer)}</p>`:''));
-    return {id:cleanId(x?.id),question:legacyQuestion.slice(0,3000),answer:legacyAnswer.slice(0,8000),questionHtml:qHtml,answerHtml:aHtml,topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',notebookDone:!!x?.notebookDone,createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString()};
+    return {id:cleanId(x?.id),question:legacyQuestion.slice(0,3000),answer:legacyAnswer.slice(0,8000),questionHtml:qHtml,answerHtml:aHtml,topicId:topicIds.has(x?.topicId)?x.topicId:null,difficulty:['facil','medio','dificil'].includes(x?.difficulty)?x.difficulty:'facil',tags:Array.isArray(x?.tags)?x.tags.slice(0,50).map(v=>String(v).slice(0,80)).filter(Boolean):[],status:x?.status==='inativa'?'inativa':'ativa',notebookDone:!!x?.notebookDone,createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString(),type:x?.type==='objetiva'?'objetiva':'discursiva',options:['A','B','C','D','E'].reduce((o,k)=>(o[k]=String(x?.options?.[k]||'').slice(0,1000),o),{}),correct:['A','B','C','D','E'].includes(x?.correct)?x.correct:null,comment:String(x?.comment||'').slice(0,3000),baseText:String(x?.baseText||'').slice(0,6000),history:Array.isArray(x?.history)?x.history.slice(-30).map(h=>({date:cleanTimestamp(h?.date)||new Date().toISOString(),simulado:String(h?.simulado||'').slice(0,80),result:['certo','errado','branco'].includes(h?.result)?h.result:'branco',timeSec:Math.max(0,Math.min(14400,Number(h?.timeSec)||0))})):[]};
   }).filter(x=>stripHtml(x.questionHtml).trim() || /<img\b/i.test(x.questionHtml));
   const materials=arr('materials').map(x=>({
     id:cleanId(x?.id),
@@ -221,7 +228,18 @@ function normalizeState(raw){
   }).filter(c=>c.steps.length):base.settings.pomodoro.cycles;
   const legacyWork=Math.max(1,Math.min(180,Number(pom.work)||25));
   const legacyBrk=Math.max(0,Math.min(180,pom.brk===0?0:(Number.isFinite(Number(pom.brk))?Number(pom.brk):5)));
-  return {...base,schemaVersion:4,materials,topics,notes,goals,sessions,events,doubts,flashcards,questions,labs:TOPOS_LABS.normalize(data.labs),settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals,contentFontSize:16,notebookVisibility:{questions:settings.notebookVisibility?.questions!==false,flashcards:settings.notebookVisibility?.flashcards!==false},reviewPersonalization:settings.reviewPersonalization&&typeof settings.reviewPersonalization==='object'?{again:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.again)||1)),hard:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.hard)||.7)),good:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.good)||1)),easy:Math.max(.2,Math.min(4,Number(settings.reviewPersonalization.easy)||1.5)),minimum:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.minimum)||1)),maximum:Math.max(1,Math.min(3650,Number(settings.reviewPersonalization.maximum)||365))}:undefined}};
+  const simulados=arr('simulados').slice(-100).map(x=>({
+    id:cleanId(x?.id),title:String(x?.title||'Simulado').slice(0,120),createdAt:cleanTimestamp(x?.createdAt)||new Date().toISOString(),
+    config:{durationMin:Math.max(0,Math.min(300,Number(x?.config?.durationMin)||0))},
+    questionIds:Array.isArray(x?.questionIds)?x.questionIds.slice(0,100).filter(id=>typeof id==='string'):[],
+    seed:Math.abs(Math.floor(Number(x?.seed)||1))%2147483647,
+    attempts:Array.isArray(x?.attempts)?x.attempts.slice(-12).map(a=>({
+      id:cleanId(a?.id),startedAt:cleanTimestamp(a?.startedAt)||new Date().toISOString(),finishedAt:cleanTimestamp(a?.finishedAt),
+      answers:a?.answers&&typeof a.answers==='object'?Object.fromEntries(Object.entries(a.answers).slice(0,100).filter(([id,v])=>typeof id==='string'&&['A','B','C','D','E'].includes(v))):{},
+      position:Math.max(0,Math.min(100,Math.floor(Number(a?.position)||0)))
+    })):[]
+  }));
+  return {...base,schemaVersion:4,materials,topics,notes,goals,sessions,events,doubts,flashcards,questions,simulados,labs:TOPOS_LABS.normalize(data.labs),settings:{terms:{area:String(terms.area||'Área').slice(0,40),sub:String(terms.sub||'Tópico').slice(0,40)},pomodoro:{work:legacyWork,brk:legacyBrk,presets:presets.length?presets:fallbackPresets,cycles:cycles.length?cycles:base.settings.pomodoro.cycles},reviewIntervals:intervals.length?intervals:base.settings.reviewIntervals,contentFontSize:16,notebookVisibility:{questions:settings.notebookVisibility?.questions!==false,flashcards:settings.notebookVisibility?.flashcards!==false},reviewPersonalization:settings.reviewPersonalization&&typeof settings.reviewPersonalization==='object'?{again:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.again)||1)),hard:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.hard)||.7)),good:Math.max(.2,Math.min(3,Number(settings.reviewPersonalization.good)||1)),easy:Math.max(.2,Math.min(4,Number(settings.reviewPersonalization.easy)||1.5)),minimum:Math.max(1,Math.min(30,Number(settings.reviewPersonalization.minimum)||1)),maximum:Math.max(1,Math.min(3650,Number(settings.reviewPersonalization.maximum)||365))}:undefined}};
 }
 async function loadState(){
   if(!CURRENT_USER)return false;
@@ -576,6 +594,7 @@ const ROUTES = [
   {id:'estudio', label:'Estúdio de aulas', ic:'🎓'},
   {id:'ditado', label:'Ditado & transcrições', ic:'🎙'},
   {id:'questoes', label:'Questões', ic:'📋'},
+  {id:'simulado', label:'Simulados', ic:'🧪'},
   {id:'eventos', label:'Provas & Eventos', ic:'🔔'},
   {id:'estatisticas', label:'Estatísticas', ic:'📊'},
   {id:'favoritos', label:'Favoritos', ic:'⭐'},
@@ -591,6 +610,7 @@ function navigate(route){ TOPOS_LABS.onNavigate(route); ROUTE = route; SIDEBAR_O
    RENDER SHELL
 ===================================================================== */
 function render(){
+  document.body.classList.add('tpz-authenticated');
 
   applyContentFontSize();
   document.body.classList.remove('public-landing-body');
@@ -674,6 +694,7 @@ function renderRoute(){
     case 'estudio': return LAB.viewEstudio();
     case 'ditado': return LAB.viewDitado();
     case 'questoes': return viewQuestoes();
+    case 'simulado': return TOPOZ_SIM.view(STATE);
     case 'eventos': return viewEventos();
     case 'estatisticas': return viewEstatisticas();
     case 'favoritos': return viewFavoritos();
@@ -687,6 +708,8 @@ function afterRender(){
   // hooks per-route after DOM injected
   if(ROUTE==='sessoes') refreshTimerDisplay();
   TOPOZ_V56.afterRender(STATE,DATA_READY,ROUTE);
+  window.TOPOZ_NEXT?.afterRender?.(STATE,DATA_READY,ROUTE);
+  window.TOPOZ_SIM?.afterRender?.(STATE,DATA_READY,ROUTE);
 }
 
 /* =====================================================================
@@ -3155,7 +3178,7 @@ function viewHistorico(){
    CONFIGURAÇÕES
 ===================================================================== */
 let TOPOS_AI_DRAFT=null;
-function viewAssistenteIA(){return `<div class="card" style="max-width:850px"><div class="section-title">✦ Assistente de estudos · revisão humana</div><p class="review-help">Gere um rascunho a partir de material fornecido. A IA pode errar. Nenhum texto vira anotação sem sua aprovação explícita. Limite de até 20 solicitações diárias por usuário, controlado no servidor.</p><div class="field"><label for="aiSource">Conteúdo para estudar</label><textarea id="aiSource" rows="9" maxlength="12000" placeholder="Cole seu material ou trecho de anotação..."></textarea></div><div class="field"><label for="aiTask">O que deseja fazer?</label><select id="aiTask"><option value="resumo">Resumo organizado</option><option value="explicacao">Explicação passo a passo</option><option value="questoes">Perguntas de revisão</option><option value="organizar">Organizar ideias sem mudar o sentido</option><option value="revisar">Revisar clareza e gramática</option></select></div><button class="btn btn-primary" onclick="runStudyAI()" id="aiSubmit">✦ Gerar rascunho</button><p class="review-help">Somente o texto enviado é processado pelo provedor configurado. Não cole senhas ou dados pessoais. As respostas não são fontes verificadas; RAG e citações rastreáveis exigem módulo posterior.</p><div id="aiResult" class="ai-result" role="status" aria-live="polite"></div><button id="aiApprove" type="button" class="btn btn-primary" hidden onclick="approveStudyAIDraft()">✓ Aprovar e salvar como anotação</button></div>`;}
+function viewAssistenteIA(){return `<div class="card" style="max-width:850px"><div class="section-title">✦ Central de IA · revisão humana</div><p>Utilize o painel contextual desta página para escolher uma tarefa e enviar somente o material autorizado. A IA real depende de homologação do gateway, consentimento e provedor configurado no staging. Nada será salvo sem sua aprovação.</p><p>O sistema antigo de IA não é utilizado nesta interface nova.</p></div>`;}
 async function runStudyAI(){
  const input=document.getElementById('aiSource')?.value.trim(),task=document.getElementById('aiTask')?.value;
  const result=document.getElementById('aiResult'),button=document.getElementById('aiSubmit'),approve=document.getElementById('aiApprove');
@@ -3167,7 +3190,7 @@ async function runStudyAI(){
   if(error)throw error;
   if(!data||typeof data.result!=='string'||typeof data.draft?.title!=='string')throw Error('Resposta inválida do servidor');
   TOPOS_AI_DRAFT={title:data.draft.title.slice(0,200),body:data.result.slice(0,16000)};
-  result.textContent=data.result+'\n\n'+(data.cached?'(Resposta recuperada do cache desta conta)':'(Rascunho novo)');
+  result.textContent=data.result+'\n\n'+((data.draft?.limitations||[]).length?'Limitações: '+data.draft.limitations.join('; ')+'\n\n':'')+(data.cached?'(Resposta recuperada do cache desta conta)':'(Rascunho novo)');
   approve.hidden=false;
  }catch(e){console.warn('Assistente IA indisponível:',e?.message||'erro');result.textContent='Não foi possível gerar o rascunho. Verifique a função study-ai, migração e cota diária em seu ambiente de homologação.';}
  finally{button.disabled=false;button.textContent='✦ Gerar rascunho';}
@@ -3474,6 +3497,7 @@ function runSearch(q){
    MODAL SYSTEM
 ===================================================================== */
 const EDITOR_THEME_KEY='central-estudos-editor-theme-v2';
+let MODAL_OPENER=null;
 let EDITOR_THEME=localStorage.getItem(EDITOR_THEME_KEY)==='light'?'light':'dark';
 let DRAFT_TIMEOUT=null, ACTIVE_DRAFT_KEY=null, DRAFT_CLOUD_TIMER=null;
 function editorThemeControl(){return `<button type="button" class="btn btn-sm editor-theme-button" onclick="toggleEditorTheme()" title="Alternar apenas os campos de edição">${EDITOR_THEME==='light'?'☀️ Editor claro':'🌙 Editor escuro'}</button>`;}
@@ -3505,17 +3529,37 @@ function showModal(innerHtml, wide, extraClass){
   const overlay = document.createElement('div');
   overlay.className='modal-overlay';
   overlay.id='activeModalOverlay';
-  overlay.onclick = (e)=>{ if(e.target===overlay) closeModal(); };
-  overlay.innerHTML = `<div class="modal ${wide?'wide':''} ${extraClass||''}">${innerHtml}</div>`;
+  MODAL_OPENER=document.activeElement;
+  overlay.addEventListener('click',e=>{if(e.target===overlay)closeModal();});
+  overlay.innerHTML = `<div class="modal ${wide?'wide':''} ${extraClass||''}" role="dialog" aria-modal="true" aria-label="Formulário de estudos">${innerHtml}</div>`;
   document.body.appendChild(overlay);
+  document.body.classList.add('tpz-modal-open');
   document.addEventListener('keydown', escCloseHandler);
   attachDraftAutosave();
+  requestAnimationFrame(()=>{const dlg=overlay.querySelector('[role=dialog]');
+    const title=dlg.querySelector('.modal-title,h1,h2,h3,.section-title');
+    if(title){if(!title.id)title.id='tpz-modal-title';dlg.setAttribute('aria-labelledby',title.id);dlg.removeAttribute('aria-label');}
+    const first=dlg.querySelector('input:not([type=hidden]):not([disabled]),textarea:not([disabled]),select:not([disabled]),[contenteditable=true],button:not([disabled])');
+    if(first)first.focus();else{dlg.setAttribute('tabindex','-1');dlg.focus();}
+  });
 }
-function escCloseHandler(e){ if(e.key==='Escape') closeModal(); }
+function escCloseHandler(e){
+ if(e.key==='Escape'){e.stopPropagation();closeModal();return;}
+ if(e.key!=='Tab')return;
+ const dlg=document.querySelector('#activeModalOverlay [role=dialog]');if(!dlg)return;
+ const els=[...dlg.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(el=>el.getClientRects().length);
+ if(!els.length){e.preventDefault();dlg.focus();return;}
+ const first=els[0],last=els[els.length-1];
+ if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus();}
+ else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}
+}
 function closeModal(){
   const m = document.getElementById('activeModalOverlay');
   if(m) m.remove();
+  document.body.classList.remove('tpz-modal-open');
   document.removeEventListener('keydown', escCloseHandler);
+  if(MODAL_OPENER?.isConnected)MODAL_OPENER.focus();
+  MODAL_OPENER=null;
 }
 
 /* =====================================================================
@@ -3601,29 +3645,41 @@ let PASSWORD_RECOVERY_MODE = false;
 const APP_REDIRECT_URL=()=>new URL('auth-callback.html',window.location.href).href;
 
 function renderPublicLanding(){
+  document.body.classList.remove('tpz-authenticated');
   document.body.classList.add('public-landing-body');
   const app=document.getElementById('app');
   app.innerHTML=`
     <div class="public-site">
       <header class="public-nav">
         <a class="public-brand" href="#inicio" aria-label="TOPOZ - início"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ</span></a>
-        <nav class="public-nav-actions" aria-label="Navegação principal"><a href="#recursos">Recursos</a><a href="#como-funciona">Como funciona</a><button class="btn btn-ghost" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button><button class="btn btn-primary" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button></nav>
+        <nav class="public-nav-actions" aria-label="Navegação principal"><a href="#recursos">Recursos</a><a href="#como-funciona">Como funciona</a><a href="#planos">Planos</a><button class="btn btn-ghost" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Entrar</button><button class="btn btn-primary" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta</button></nav>
       </header>
       <main>
         <section class="public-hero" id="inicio">
-          <div class="public-hero-copy"><div class="public-eyebrow"><span></span> ESTUDOS · REVISÕES · QUESTÕES</div><h1>Planeje o que importa.<br><em>Realize com clareza.</em></h1><p>Organize suas matérias, anotações, questões, flashcards e revisões em um espaço privado de estudos.</p><div class="public-hero-actions"><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Experimentar 30 dias <span aria-hidden="true">→</span></button><button class="public-secondary-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Já tenho uma conta</button></div><div class="public-hero-note"><span>✓</span> Anotações · Questões · Flashcards · Revisões</div></div>
+          <div class="public-hero-copy"><div class="public-eyebrow"><span></span> ESTUDOS · REVISÕES · QUESTÕES</div><h1>Planeje o que importa.<br><em>Realize com clareza.</em></h1><p>Organize suas matérias, anotações, questões, flashcards e revisões em um espaço privado de estudos.</p><div class="public-hero-actions"><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar conta gratuita <span aria-hidden="true">→</span></button><button class="public-secondary-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Já tenho uma conta</button></div><div class="public-hero-note"><span>✓</span> Anotações · Questões · Flashcards · Revisões</div></div>
           <div class="public-hero-visual" aria-label="Prévia ilustrativa do painel de estudos"><div class="preview-glow"></div><div class="preview-window"><div class="preview-window-top"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>Seu espaço de estudos</span><span class="preview-window-dots">•••</span></div><div class="preview-welcome"><small>PLANO DE HOJE</small><strong>Um passo de cada vez.</strong><span>Organize suas prioridades e comece pelo que importa.</span></div><div class="preview-stats"><div><span>Foco concluído</span><strong>01h 40m</strong><i><b style="width:66%"></b></i></div><div><span>Metas da semana</span><strong>3 de 5</strong><i><b style="width:60%"></b></i></div></div><div class="preview-task-list"><div class="preview-row"><span class="preview-check">✓</span><span><b>Revisar anotações</b><small>Biologia · 25 min</small></span><span class="preview-pill">Concluído</span></div><div class="preview-row"><span class="preview-empty-check"></span><span><b>Praticar flashcards</b><small>Anatomia · 15 min</small></span><span class="preview-row-arrow">↗</span></div><div class="preview-row"><span class="preview-empty-check"></span><span><b>Resolver questões</b><small>Fisiologia · 20 min</small></span><span class="preview-row-arrow">↗</span></div></div><div class="preview-timer"><span>◷ Sessão de foco</span><strong>25:00</strong><span>Seu tempo, seu ritmo.</span></div></div><div class="preview-floating preview-floating-top"><span>✦</span><div><strong>Revisão inteligente</strong><small>Recupere o que aprendeu</small></div></div><div class="preview-floating preview-floating-bottom"><span>↗</span><div><strong>Progresso visível</strong><small>Pequenos avanços contam</small></div></div></div>
         </section>
         <section class="public-value-strip"><div><strong>Organize</strong><span>matérias e conteúdos</span></div><div><strong>Pratique</strong><span>questões e flashcards</span></div><div><strong>Concentre-se</strong><span>sessões de foco</span></div><div><strong>Acompanhe</strong><span>seu progresso</span></div></section>
         <section class="public-section" id="recursos"><div class="public-section-heading"><div class="public-eyebrow">UM SISTEMA, VÁRIAS POSSIBILIDADES</div><h2>Sua rotina não precisa ficar espalhada.</h2><p>Conecte matérias, anotações, questões e revisões. Acompanhe sua aprendizagem de forma organizada.</p></div><div class="public-feature-grid"><article class="public-feature feature-large"><div class="public-feature-icon amber">▦</div><span class="public-feature-kicker">PLANEJAMENTO</span><h3>Clareza para o dia a dia</h3><p>Reúna calendário, metas, eventos e sessões em um fluxo de organização que ajuda a decidir o próximo passo.</p><div class="feature-mini-calendar"><span>SEG</span><span>TER</span><span>QUA</span><span>QUI</span><span>SEX</span><b>✓</b><b>•</b><b>✓</b><b>•</b><b>✓</b></div></article><article class="public-feature"><div class="public-feature-icon teal">▤</div><span class="public-feature-kicker">CONHECIMENTO</span><h3>Anotações com contexto</h3><p>Organize suas ideias por área, use formatação e mantenha conteúdos importantes acessíveis.</p></article><article class="public-feature"><div class="public-feature-icon violet">▣</div><span class="public-feature-kicker">PRÁTICA ATIVA</span><h3>Questões e flashcards</h3><p>Treine a lembrança, registre seus resultados de revisão e volte aos cartões no momento planejado.</p></article><article class="public-feature"><div class="public-feature-icon blue">◷</div><span class="public-feature-kicker">CONCENTRAÇÃO</span><h3>Foco no seu ritmo</h3><p>Use timers, configure pausas e monte ciclos de estudo que acompanhem a sua rotina.</p></article><article class="public-feature feature-wide"><div class="public-feature-icon green">↗</div><div><span class="public-feature-kicker">EVOLUÇÃO</span><h3>Veja o caminho que está construindo</h3><p>Acompanhe suas sessões, metas e atividades para entender melhor sua consistência ao longo do tempo.</p></div><div class="feature-progress-art"><span>Foco semanal</span><strong>+1 sessão de cada vez</strong><i><b style="width:72%"></b></i><small>Pequenos passos, progresso real.</small></div></article></div></section>
         <section class="public-how" id="como-funciona"><div class="public-section-heading"><div class="public-eyebrow">SIMPLES PARA COMEÇAR</div><h2>Transforme intenção em rotina.</h2><p>Comece com o essencial e ajuste a sua central conforme suas necessidades mudam.</p></div><div class="public-steps"><article><span>01</span><h3>Organize</h3><p>Organize matérias, conteúdos e objetivos de estudo.</p></article><article><span>02</span><h3>Pratique</h3><p>Resolva questões, revise flashcards e consolide seu aprendizado.</p></article><article><span>03</span><h3>Acompanhe</h3><p>Acompanhe sessões, metas e desempenho nos estudos.</p></article></div></section>
-        <section class="public-cta-section"><div><span class="public-eyebrow">COMECE COM O PRÓXIMO PASSO</span><h2>Seu próximo avanço começa com uma boa rotina.</h2><p>Crie sua conta e organize seus estudos, matérias e revisões.</p></div><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar minha conta <span aria-hidden="true">→</span></button></section>
+        <section class="public-section tpz-pricing" id="planos" aria-labelledby="tpzPlanTitle">
+  <div class="public-section-heading"><div class="public-eyebrow">ACESSO E PLANOS</div><h2 id="tpzPlanTitle">Um plano para cada etapa da jornada.</h2>
+  <p>O TOPOZ está em beta. Os valores e benefícios abaixo são uma <strong>proposta em estudo</strong>; não há cobrança ou assinatura ativa nesta versão.</p></div>
+  <div class="tpz-pricing-grid">
+    <article class="tpz-price"><span>GRÁTIS</span><h3>Comece com o essencial</h3><p>Organização, anotações, questões e flashcards.</p><strong>R$ 0</strong><small>Plano de entrada em avaliação</small></article>
+    <article class="tpz-price"><span>ESSENCIAL</span><h3>Mais espaço para evoluir</h3><p>Capacidade ampliada e planejamento intermediário.</p><strong>R$ 9,90 <small>/mês</small></strong><small>Preço preliminar</small></article>
+    <article class="tpz-price tpz-price-highlight"><span>PRO</span><h3>Planeje, pratique e aprofunde</h3><p>Simulados avançados, exportações e assistência de IA.</p><strong>R$ 19,90 <small>/mês</small></strong><small>Preço preliminar</small></article>
+    <article class="tpz-price"><span>PRO MAX</span><h3>Experiência especializada</h3><p>Laboratórios e limites superiores, sujeitos à validação.</p><strong>R$ 34,90 <small>/mês</small></strong><small>Plano futuro em estudo</small></article>
+  </div><p class="tpz-price-note">Nenhum plano pago pode ser contratado nesta versão. Funcionalidades futuras dependem de implementação e homologação.</p>
+</section>
+<section class="public-cta-section"><div><span class="public-eyebrow">COMECE COM O PRÓXIMO PASSO</span><h2>Seu próximo avanço começa com uma boa rotina.</h2><p>Crie sua conta e organize seus estudos, matérias e revisões.</p></div><button class="btn btn-primary public-cta" onclick="AUTH_VIEW='auth';AUTH_MODE='signup';AUTH_MSG=null;renderAuth()">Criar minha conta <span aria-hidden="true">→</span></button></section>
       </main>
       <footer class="public-footer"><a class="public-brand" href="#inicio"><img class="topos-logo-icon" src="topos-symbol.svg" alt=""><span>TOPOZ</span></a><span>Planeje. Execute. Evolua.</span><button type="button" onclick="AUTH_VIEW='auth';AUTH_MODE='login';AUTH_MSG=null;renderAuth()">Acessar minha conta</button></footer>
     </div>`;
 }
 
 function renderAuth(){
+  document.body.classList.remove('tpz-authenticated');
   document.body.classList.remove('public-landing-body');
   const app = document.getElementById('app');
   app.innerHTML = `

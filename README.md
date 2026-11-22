@@ -39,3 +39,7 @@ Nova versão incremental, em **staging por padrão**: `topos-config.js` usa plac
 Para abrir a demonstração offline, use `estudos-demo.html`. Para descobrir o escopo e pendências, **leia `STATUS-IMPLEMENTACAO.md` e `MIGRACOES.md`**. Os novos menus são `Fila de revisão` e `Planejamento inteligente` (planejador de regras locais; não é geração IA). A IA exige Edge Function, chave de provedor e ambiente homologado e não está habilitada neste pacote.
 
 Testes: `node tests-atuais/test_v56_node.cjs`, `python tests-atuais/test_v56_browser.py` e suites da V5.5 em `tests-atuais/`. Mais detalhes em `RELATORIO-ENTREGA.md`.
+
+## Hotfix V5.6.1 — Configuração de Supabase
+
+A validação de conexão agora admite barra final e domínios HTTPS personalizados, diferencia causas de configuração e é compartilhada por login, callback e diagnóstico. Consulte `CORRECAO-CONEXAO-V5-6-1.md`. O pacote **não contém chaves reais** nem executa migrations.

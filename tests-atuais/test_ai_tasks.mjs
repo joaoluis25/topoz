@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {TASKS,validateDraft} from '../supabase/functions/ai-gateway/tasks.ts';
+assert.ok(Object.keys(TASKS).length>=20);
+const text='A fotossíntese transforma energia luminosa em energia química armazenada.';
+const ok={title:'Revisão',body:'Síntese',limitations:[],items:[]};
+assert.deepEqual(validateDraft(ok,'resumo',text),{ok:true});
+assert.equal(validateDraft({...ok,title:'x'.repeat(161)},'resumo',text).ok,false);
+assert.equal(validateDraft({...ok,items:[{front:'Pergunta',back:'Resposta',sourceQuote:'A fotossíntese transforma energia luminosa'}]},'cartoes',text).ok,true);
+assert.equal(validateDraft({...ok,items:[{front:'Pergunta',back:'Resposta',sourceQuote:'Fonte que não existe'}]},'cartoes',text).ok,false);
+const q={statement:'Qual processo?',options:{A:'Fotossíntese',B:'X',C:'Y',D:'Z',E:'W'},correct:'A',explanation:'Segue trecho',sourceQuote:'A fotossíntese transforma energia luminosa'};
+assert.equal(validateDraft({...ok,items:[q]},'questoes_objetivas',text).ok,true);
+assert.equal(validateDraft({...ok,items:[{...q,correct:'F'}]},'questoes_objetivas',text).ok,false);
+assert.equal(validateDraft({...ok,items:[{...q,sourceQuote:'inexistente'}]},'questoes_objetivas',text).ok,false);
+console.log('Testes de validação de IA: 7/7 aprovados');
